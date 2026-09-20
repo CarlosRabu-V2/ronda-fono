@@ -105,6 +105,18 @@ async function probarConexion() {
 
   if (!url || !token) { aviso.innerHTML = `<div class="banda warn">Faltan la dirección y la clave.</div>`; return; }
 
+  // La dirección de pruebas (/dev) exige sesión de Google y no envía cabeceras
+  // entre dominios: el navegador bloquea la llamada antes de que salga.
+  if (/\/dev\/?$/.test(url)) {
+    aviso.innerHTML = `<div class="banda warn">
+        <strong>Esa es la dirección de pruebas.</strong> Termina en <code>/dev</code> y no
+        sirve para la app.
+        <span class="meta">Necesitas la que termina en <code>/exec</code>:
+        en Apps Script, Implementar → Gestionar implementaciones → URL de la aplicación web.</span>
+      </div>`;
+    return;
+  }
+
   const btn = $('#btnProbar');
   btn.disabled = true;
   btn.textContent = 'Conectando…';

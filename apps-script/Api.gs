@@ -53,12 +53,25 @@ function verDatosDeLaApp() {
 
   if (!token) { token = configurarToken(); creada = true; }
 
+  // OJO: ejecutada desde el editor, getUrl() devuelve la direccion de PRUEBAS,
+  // la que termina en /dev. Esa exige sesion de Google y no manda cabeceras CORS,
+  // asi que la app nunca podra conectarse con ella.
   var url = '';
   try { url = ScriptApp.getService().getUrl() || ''; } catch (e) { url = ''; }
+  var esPruebas = /\/dev\/?$/.test(url);
 
   Logger.log('══════════════════════════════════════════');
   Logger.log('DIRECCION DE LA APP WEB');
-  Logger.log(url || '  (todavia no implementada: Implementar -> Nueva implementacion)');
+  if (!url) {
+    Logger.log('  (todavia no implementada: Implementar -> Nueva implementacion)');
+  } else if (esPruebas) {
+    Logger.log('  ' + url);
+    Logger.log('  >>> ESTA ES LA DIRECCION DE PRUEBAS Y NO SIRVE PARA LA APP.');
+    Logger.log('  >>> Busca la que termina en /exec en:');
+    Logger.log('  >>> Implementar -> Gestionar implementaciones -> URL de la aplicacion web');
+  } else {
+    Logger.log('  ' + url);
+  }
   Logger.log('');
   Logger.log('CLAVE DE ACCESO');
   Logger.log(token);

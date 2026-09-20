@@ -39,6 +39,22 @@ function configurarGemini() {
 }
 
 
+/**
+ * Confirma que la clave quedó guardada, sin mostrarla.
+ * Ejecútala después de configurarGemini() y mira el registro de ejecución.
+ */
+function verificarGemini() {
+  var k = PropertiesService.getScriptProperties().getProperty('GEMINI_KEY');
+  if (!k) {
+    Logger.log('NO hay clave guardada. Ejecuta configurarGemini() con la clave pegada.');
+    return false;
+  }
+  Logger.log('Clave guardada correctamente (termina en ...' + k.slice(-4) +
+             ', ' + k.length + ' caracteres).');
+  return true;
+}
+
+
 // ══════════════════════════════════════════════════════════
 // NÓMINA DE PACIENTES
 // ══════════════════════════════════════════════════════════

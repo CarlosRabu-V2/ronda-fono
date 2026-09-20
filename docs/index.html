@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2563eb">
+<title>Ronda Fonoaudiología</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- Configuración inicial -->
+<div id="configuracion" class="oculto"></div>
+
+<!-- App -->
+<div id="app" class="oculto">
+
+  <div id="ronda">
+    <div class="barra">
+      <div class="barra-fila">
+        <div class="barra-titulo">
+          <div class="eyebrow">Fonoaudiología</div>
+          <h1>Ronda</h1>
+        </div>
+        <button class="pill sync-off" id="pillSync"></button>
+        <button class="icon-btn" id="btnTema" aria-label="Cambiar tema"></button>
+        <button class="icon-btn" id="btnRefrescar" aria-label="Actualizar censo"></button>
+      </div>
+
+      <div style="padding:0 16px 8px;font-size:13px;color:var(--text-secondary)" id="fechaHoy"></div>
+
+      <div class="buscador">
+        <button class="buscador-cerrado" id="buscadorCerrado">
+          <span id="icoBuscar"></span>
+          <span>Buscar cama, nombre o RUT</span>
+        </button>
+        <div class="buscador-abierto oculto" id="buscadorAbierto">
+          <input type="search" id="inputBuscar" placeholder="Cama, nombre o RUT" autocomplete="off">
+          <button id="btnCerrarBuscar">Cerrar</button>
+        </div>
+      </div>
+
+      <div class="progreso">
+        <div class="progreso-fila">
+          <span id="progresoTexto">—</span>
+          <span id="progresoPct" style="font-weight:600;color:var(--primary)">—</span>
+        </div>
+        <div class="progreso-barra"><div class="progreso-relleno" id="progresoRelleno" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <main>
+      <div id="lista"></div>
+      <button class="plegable oculto" id="bloqueEgresos">
+        <span id="icoArchivo"></span>
+        <span id="egresosTexto">Egresos recientes</span>
+        <span class="flecha" id="icoFlecha"></span>
+      </button>
+      <div id="listaEgresos" class="oculto" style="margin-top:8px"></div>
+    </main>
+
+    <button class="fab" id="fab"><span id="icoMas"></span> Ingreso</button>
+  </div>
+
+  <!-- Vista 2 -->
+  <div id="dashboard" class="oculto"></div>
+
+  <!-- Vista 3 -->
+  <div id="informes" class="oculto"></div>
+
+  <!-- Pantallas a pantalla completa: sesión, ingreso -->
+  <div id="pantalla" class="oculto"></div>
+
+  <nav class="nav">
+    <button data-vista="ronda" class="activo"><span id="navRonda"></span>Ronda</button>
+    <button data-vista="dashboard"><span id="navDash"></span>Dashboard</button>
+    <button data-vista="informes"><span id="navInf"></span>Informes</button>
+  </nav>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Aquí se arma el informe justo antes de imprimir. Invisible en pantalla. -->
+<div id="impresion"></div>
+
+<script src="app.js"></script>
+<script src="pantallas.js"></script>
+<script src="dashboard.js"></script>
+<script src="informes.js"></script>
+<script>
+  // Los iconos del armazón se insertan una vez, desde el mismo catálogo que usan
+  // las pantallas, para no repetir el SVG dentro del HTML.
+  document.getElementById('icoBuscar').innerHTML   = ICO.buscar;
+  document.getElementById('icoArchivo').innerHTML  = ICO.archivo;
+  document.getElementById('icoFlecha').innerHTML   = ICO.flecha;
+  document.getElementById('icoMas').innerHTML      = ICO.mas;
+  document.getElementById('btnTema').innerHTML     = ICO.luna;
+  document.getElementById('btnRefrescar').innerHTML = ICO.volver;
+  document.getElementById('navRonda').innerHTML    = ICO.lista;
+  document.getElementById('navDash').innerHTML     = ICO.grafico;
+  document.getElementById('navInf').innerHTML      = ICO.doc;
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+  }
+</script>
+</body>
+</html>

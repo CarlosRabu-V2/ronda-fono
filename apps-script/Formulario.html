@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-light: #dbeafe;
+      --primary-dark: #1d4ed8;
+      --accent: #0ea5e9;
+      --surface: #ffffff;
+      --surface-alt: #f8fafc;
+      --bg: #f1f5f9;
+      --text: #1e293b;
+      --text-secondary: #64748b;
+      --border: #e2e8f0;
+      --border-focus: #93c5fd;
+      --success: #10b981;
+      --success-light: #d1fae5;
+      --danger: #ef4444;
+      --danger-light: #fee2e2;
+      --warning: #f59e0b;
+      --warning-light: #fef3c7;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+      --shadow: 0 4px 12px rgba(0,0,0,0.08);
+      --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      padding-bottom: 100px;
+      overflow-x: hidden;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      color: #fff;
+      padding: 20px 16px 16px;
+      text-align: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 12px rgba(37,99,235,0.3);
+    }
+    .header h1 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em; }
+    .header p { font-size: 0.8rem; opacity: 0.85; margin-top: 2px; }
+
+    /* ── Form container ── */
+    .form-wrap { max-width: 720px; margin: 0 auto; padding: 12px; }
+
+    /* ── Sections ── */
+    .section {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow-sm);
+      border: 1px solid var(--border);
+    }
+    .section-title {
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--primary);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .section-title .icon { font-size: 1rem; }
+
+    /* ── Grid ── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .grid-full { grid-column: 1 / -1; }
+
+    /* ── Labels ── */
+    .field-label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Inputs ── */
+    input[type="text"],
+    input[type="number"],
+    input[type="date"],
+    select {
+      width: 100%;
+      padding: 12px 14px;
+      font-size: 16px !important; /* Evita el zoom automático en iOS */
+      font-family: 'DM Sans', sans-serif;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface-alt);
+      color: var(--text);
+      transition: border-color var(--transition), box-shadow var(--transition);
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
+      background: #fff;
+    }
+    input.campo-faltante, select.campo-faltante {
+      border-color: var(--danger);
+      background: var(--danger-light);
+    }
+    select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 32px;
+    }
+
+    /* ── Aviso de paciente conocido ── */
+    .aviso {
+      display: none;
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+      line-height: 1.45;
+    }
+    .aviso.visible { display: block; }
+    .aviso.conocido { background: var(--success-light); border: 1.5px solid var(--success); color: #065f46; }
+    .aviso.nuevo    { background: var(--surface-alt); border: 1.5px solid var(--border); color: var(--text-secondary); }
+    .aviso strong { font-weight: 700; }
+    .aviso .meta { display: block; margin-top: 3px; font-size: 0.78rem; opacity: 0.9; }
+    .aviso button {
+      margin-top: 10px;
+      width: 100%;
+      padding: 10px 12px;
+      font-family: inherit;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #065f46;
+      background: #fff;
+      border: 1.5px solid var(--success);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      text-align: left;
+    }
+    .aviso button:active { background: var(--success-light); }
+
+    /* ── Toggle buttons ── */
+    .toggle-group { display: flex; flex-wrap: wrap; gap: 8px; }
+    .toggle-btn { position: relative; }
+    .toggle-btn input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .toggle-btn label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 14px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      background: var(--surface-alt);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all var(--transition);
+      user-select: none;
+      text-align: center;
+      min-height: 44px;
+      line-height: 1.2;
+    }
+    .toggle-btn input:checked + label {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+    .toggle-btn input:checked + label.toggle-danger  { background: var(--danger);  border-color: var(--danger); }
+    .toggle-btn input:checked + label.toggle-success { background: var(--success); border-color: var(--success); }
+    .toggle-btn input:checked + label.toggle-warning { background: var(--warning); border-color: var(--warning); }
+
+    /* ── Stepper ── */
+    .stepper {
+      display: flex;
+      align-items: center;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      background: var(--surface-alt);
+      width: fit-content;
+    }
+    .stepper button {
+      width: 44px; height: 44px;
+      border: none; background: transparent;
+      font-size: 1.2rem; font-weight: 700;
+      color: var(--primary); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .stepper button:active { background: var(--primary-light); }
+    .stepper input {
+      width: 52px; text-align: center;
+      border: none;
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      border-radius: 0;
+      background: #fff;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 16px !important;
+      font-weight: 500;
+      padding: 10px 4px;
+    }
+    .stepper input:focus { box-shadow: none; }
+
+    /* ── Calendario ── */
+    .cal-container { margin-top: 4px; }
+    .cal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .cal-header span { font-size: 0.92rem; font-weight: 700; color: var(--text); }
+    .cal-nav {
+      background: none; border: 1.5px solid var(--border); border-radius: 8px;
+      width: 36px; height: 36px; font-size: 1rem; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; color: var(--text);
+    }
+    .cal-nav:active { background: var(--primary-light); }
+    .cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 4px; }
+    .cal-weekdays span { text-align: center; font-size: 0.7rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; }
+    .cal-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+    .cal-day {
+      aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+      font-size: 0.88rem; font-weight: 500; border-radius: 50%;
+      cursor: pointer; border: none; background: none; color: var(--text); min-height: 38px;
+    }
+    .cal-day:hover { background: var(--primary-light); }
+    .cal-day.selected { background: var(--primary); color: #fff; font-weight: 700; }
+    .cal-day.today { border: 2px solid var(--primary); }
+    .cal-day.empty { pointer-events: none; }
+
+    /* ── Colapsables ── */
+    .collapsible-toggle {
+      display: none;
+      width: 100%;
+      padding: 12px 14px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      background: var(--surface-alt);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      text-align: left;
+      color: var(--text);
+      justify-content: space-between;
+      align-items: center;
+    }
+    .collapsible-toggle .arrow { transition: transform var(--transition); font-size: 0.7rem; }
+    .collapsible-toggle.open .arrow { transform: rotate(180deg); }
+    .collapsible-content { max-height: 0; overflow: hidden; transition: max-height 0.35s ease; }
+    .collapsible-content.open { max-height: 2000px; }
+
+    /* ── Tablas de referencia ── */
+    .ref-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-top: 8px; border-radius: var(--radius-sm); overflow: hidden; }
+    .ref-table th {
+      background: var(--primary); color: #fff; padding: 8px 10px; text-align: left;
+      font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .ref-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--text); }
+    .ref-table tr:nth-child(even) td { background: var(--surface-alt); }
+
+    /* ── Envío ── */
+    .submit-bar {
+      position: sticky;
+      bottom: 0;
+      background: var(--surface);
+      padding: 12px 16px;
+      box-shadow: 0 -4px 16px rgba(0,0,0,0.1);
+      z-index: 100;
+      display: flex;
+      justify-content: center;
+    }
+    .submit-btn {
+      width: 100%; max-width: 720px; padding: 16px;
+      font-family: inherit; font-size: 1rem; font-weight: 700; color: #fff;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      border: none; border-radius: var(--radius-sm); cursor: pointer;
+    }
+    .submit-btn:active { transform: scale(0.98); }
+    .submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    /* ── Overlay ── */
+    .loading-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(255,255,255,0.9); z-index: 999;
+      align-items: center; justify-content: center; flex-direction: column; gap: 12px;
+    }
+    .loading-overlay.active { display: flex; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid var(--border); border-top-color: var(--primary);
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed; bottom: 80px; left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      max-width: 90vw;
+      padding: 12px 20px; border-radius: var(--radius-sm);
+      font-size: 0.85rem; font-weight: 600; color: #fff;
+      z-index: 200; opacity: 0; transition: all 0.3s ease; pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.success { background: var(--success); }
+    .toast.error   { background: var(--danger); }
+
+    /* ── Responsive ── */
+    @media (max-width: 640px) {
+      .form-wrap { padding: 8px; }
+      .section { padding: 14px; margin-bottom: 10px; }
+      .grid-2 { grid-template-columns: 1fr; gap: 10px; }
+      .grid-2-keep { grid-template-columns: 1fr 1fr; }
+      .toggle-group { gap: 6px; }
+      .toggle-btn label { padding: 9px 11px; font-size: 0.78rem; }
+      .desktop-only { display: none !important; }
+      /* block, no flex: un <select> en modo flex se renderiza mal en Android */
+      .mobile-only { display: block !important; }
+      .toggle-group.mobile-only { display: flex !important; }
+      .collapsible-toggle { display: flex; }
+    }
+    @media (min-width: 641px) {
+      .mobile-only { display: none !important; }
+      .collapsible-toggle { display: none; }
+      .collapsible-content { max-height: none !important; overflow: visible; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="spinner"></div>
+    <span style="font-weight:600;color:var(--text-secondary);">Enviando datos...</span>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <div class="header">
+    <h1>Formulario de Atención</h1>
+    <p>Registro fonoaudiológico</p>
+  </div>
+
+  <div class="form-wrap">
+
+    <!-- ═══ Condición de Hospitalización ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">🏥</span> Condición de Hospitalización</div>
+      <div class="toggle-group" id="condicionGroup">
+        <div class="toggle-btn"><input type="radio" id="cond1" name="condicionHospitalizacion" value="Ingreso"><label for="cond1" class="toggle-success">Ingreso</label></div>
+        <div class="toggle-btn"><input type="radio" id="cond2" name="condicionHospitalizacion" value="Alta"><label for="cond2">Alta</label></div>
+        <div class="toggle-btn"><input type="radio" id="cond3" name="condicionHospitalizacion" value="Abandono"><label for="cond3" class="toggle-danger">Abandono</label></div>
+        <div class="toggle-btn"><input type="radio" id="cond4" name="condicionHospitalizacion" value="Fallecimiento"><label for="cond4" class="toggle-danger">Fallecimiento</label></div>
+        <div class="toggle-btn"><input type="radio" id="cond5" name="condicionHospitalizacion" value="ACV REF APS"><label for="cond5" class="toggle-warning">ACV REF APS</label></div>
+        <div class="toggle-btn"><input type="radio" id="cond6" name="condicionHospitalizacion" value="Otro Hospital"><label for="cond6">Otro Hospital</label></div>
+        <div class="toggle-btn"><input type="radio" id="cond7" name="condicionHospitalizacion" value="Otro Servicio"><label for="cond7">Otro Servicio</label></div>
+        <div class="toggle-btn"><input type="radio" id="cond8" name="condicionHospitalizacion" value="Nivel Primario"><label for="cond8">Nivel Primario</label></div>
+      </div>
+    </div>
+
+    <!-- ═══ Servicio y Fonoaudiólogo ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">👤</span> Profesional</div>
+      <div class="grid-2">
+        <div>
+          <label class="field-label" for="servicio">Servicio</label>
+          <select id="servicio"><option value="">Seleccione...</option></select>
+        </div>
+        <div>
+          <label class="field-label" for="fonoaudiólogo">Fonoaudiólogo/a</label>
+          <select id="fonoaudiólogo"><option value="">Seleccione...</option></select>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Fecha y Cama ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">📅</span> Fecha y Cama</div>
+      <div class="grid-2 grid-2-keep">
+        <div>
+          <label class="field-label">Fecha</label>
+          <div class="cal-container" id="calContainer"></div>
+          <input type="hidden" id="fecha" value="">
+        </div>
+        <div>
+          <label class="field-label" for="cama">N° de Cama</label>
+          <input type="text" id="cama" inputmode="numeric" placeholder="Ej: 12" style="font-size:1.3rem;text-align:center;font-weight:700;">
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Datos del Paciente ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">🧑‍⚕️</span> Datos del Paciente</div>
+
+      <div>
+        <label class="field-label" for="rut">RUT</label>
+        <input type="text" id="rut" placeholder="12345678-9" autocomplete="off">
+        <div class="aviso" id="avisoPaciente"></div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <label class="field-label" for="nombrePaciente">Nombre del Paciente</label>
+        <input type="text" id="nombrePaciente" placeholder="Nombre completo">
+      </div>
+
+      <div style="margin-top:12px;">
+        <label class="field-label">Sexo</label>
+        <div class="toggle-group">
+          <div class="toggle-btn"><input type="radio" id="sexoM" name="sexo" value="MASCULINO"><label for="sexoM">Masculino</label></div>
+          <div class="toggle-btn"><input type="radio" id="sexoF" name="sexo" value="FEMENINO"><label for="sexoF">Femenino</label></div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <label class="field-label" for="edad">Edad</label>
+        <input type="text" id="edad" placeholder="Ej: 65 o 5 meses">
+      </div>
+    </div>
+
+    <!-- ═══ Diagnóstico, REM y Origen ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">📋</span> Diagnóstico y REM</div>
+      <div class="grid-2">
+        <div>
+          <div id="diagnostico1Block">
+            <label class="field-label" for="diagnostico1Text">Diagnóstico 1</label>
+            <input type="text" id="diagnostico1Text" placeholder="Diagnóstico">
+            <div style="margin-top:10px;">
+              <label class="field-label" for="rem1">REM 1</label>
+              <input type="text" id="rem1" inputmode="numeric" placeholder="N° REM" class="desktop-only" style="display:block;">
+              <select id="rem1Select" class="mobile-only" style="display:none;" onchange="document.getElementById('rem1').value = this.value;">
+                <option value="">Seleccionar REM...</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="diagnosticoContainer"></div>
+
+          <button type="button" id="botonDiagnostico" onclick="agregarDiagnostico()" style="margin-top:10px;padding:10px 16px;font-family:inherit;font-size:0.82rem;font-weight:600;background:var(--surface-alt);color:var(--primary);border:1.5px dashed var(--primary);border-radius:var(--radius-sm);cursor:pointer;width:100%;">
+            + Agregar Diagnóstico 2
+          </button>
+
+          <div style="margin-top:12px;">
+            <label class="field-label" for="origen">Origen</label>
+            <input type="text" id="origen" inputmode="numeric" placeholder="N° Origen" class="desktop-only" style="display:block;">
+            <select id="origenSelect" class="mobile-only" style="display:none;" onchange="document.getElementById('origen').value = this.value;">
+              <option value="">Seleccionar Origen...</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="desktop-only">
+          <table class="ref-table">
+            <thead><tr><th>REM</th><th>Diagnóstico</th></tr></thead>
+            <tbody id="tablaRemBody"></tbody>
+          </table>
+
+          <button class="collapsible-toggle" style="display:flex;margin-top:10px;font-size:0.78rem;" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open');">
+            Tabla Origen – Atención Ambulatorio <span class="arrow">▼</span>
+          </button>
+          <div class="collapsible-content">
+            <table class="ref-table" style="margin-top:6px;">
+              <thead><tr><th>#</th><th>Atención Ambulatorio</th></tr></thead>
+              <tbody id="tablaOrigenBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Categorización ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">📊</span> Categorización</div>
+      <select id="categorizacion" class="desktop-only" style="display:block;">
+        <option value="">Seleccione una opción</option>
+        <option value="2">Alta - 2</option>
+        <option value="1">Media - 1</option>
+        <option value="1-2 POR SEMANA">Baja - 1-2 por semana</option>
+        <option value="NSP">No se presenta</option>
+      </select>
+      <div class="toggle-group mobile-only" id="categorizacionMobile" style="display:none;">
+        <div class="toggle-btn"><input type="radio" id="cat1" name="categorizacionM" value="2" onchange="document.getElementById('categorizacion').value=this.value"><label for="cat1">Alta (2)</label></div>
+        <div class="toggle-btn"><input type="radio" id="cat2" name="categorizacionM" value="1" onchange="document.getElementById('categorizacion').value=this.value"><label for="cat2">Media (1)</label></div>
+        <div class="toggle-btn"><input type="radio" id="cat3" name="categorizacionM" value="1-2 POR SEMANA" onchange="document.getElementById('categorizacion').value=this.value"><label for="cat3">Baja</label></div>
+        <div class="toggle-btn"><input type="radio" id="cat4" name="categorizacionM" value="NSP" onchange="document.getElementById('categorizacion').value=this.value"><label for="cat4" class="toggle-warning">NSP</label></div>
+      </div>
+    </div>
+
+    <!-- ═══ Atenciones ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">📈</span> Atenciones</div>
+      <div class="grid-2 grid-2-keep">
+        <div>
+          <label class="field-label">N° Atenciones</label>
+          <div class="stepper">
+            <button type="button" onclick="cambiarValor('atencionesRealizadas',-1)">−</button>
+            <input type="number" id="atencionesRealizadas" value="" inputmode="numeric">
+            <button type="button" onclick="cambiarValor('atencionesRealizadas',1)">+</button>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">Brechas</label>
+          <div class="stepper">
+            <button type="button" onclick="cambiarValor('brechas',-1)">−</button>
+            <input type="number" id="brechas" value="" inputmode="numeric">
+            <button type="button" onclick="cambiarValor('brechas',1)">+</button>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label class="field-label" for="suspendidas">Suspendidas</label>
+        <input type="text" id="suspendidas" placeholder="Motivo...">
+      </div>
+    </div>
+
+    <!-- ═══ Evaluación ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">🔍</span> Evaluación</div>
+      <label class="field-label">Tipo de Evaluación</label>
+      <div class="toggle-group" style="margin-bottom:14px;">
+        <div class="toggle-btn"><input type="radio" id="evalInicial" name="tipoEvaluacion" value="Inicial"><label for="evalInicial">Inicial</label></div>
+        <div class="toggle-btn"><input type="radio" id="evalIntermedia" name="tipoEvaluacion" value="Intermedia"><label for="evalIntermedia">Intermedia</label></div>
+      </div>
+      <label class="field-label">¿Qué evaluaste?</label>
+      <div class="toggle-group">
+        <div class="toggle-btn"><input type="checkbox" id="evDeg" name="evaluacion" value="Deglución"><label for="evDeg">Deglución</label></div>
+        <div class="toggle-btn"><input type="checkbox" id="evVoz" name="evaluacion" value="Voz"><label for="evVoz">Voz</label></div>
+        <div class="toggle-btn"><input type="checkbox" id="evHab" name="evaluacion" value="Habla"><label for="evHab">Habla</label></div>
+        <div class="toggle-btn"><input type="checkbox" id="evLen" name="evaluacion" value="Lenguaje"><label for="evLen">Lenguaje</label></div>
+        <div class="toggle-btn"><input type="checkbox" id="evAud" name="evaluacion" value="Audición"><label for="evAud">Audición</label></div>
+        <div class="toggle-btn"><input type="checkbox" id="evCog" name="evaluacion" value="Función Cognitiva"><label for="evCog">Fx Cognitiva</label></div>
+      </div>
+    </div>
+
+    <!-- ═══ Intervenciones ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">🛠️</span> Intervenciones</div>
+      <div class="grid-2 grid-2-keep" id="intervencionesGrid"></div>
+    </div>
+
+    <!-- ═══ DISF ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">⚕️</span> Disfunción (DISF)</div>
+      <select id="disf-select" class="desktop-only" style="display:block;">
+        <option value="">Seleccione una Disfunción</option>
+        <option value="M">M: Mecánica</option>
+        <option value="PS">PS: Psicógena</option>
+        <option value="S">S: Sarcopénica</option>
+        <option value="N">N: Neurológica</option>
+        <option value="I">I: Iatrogénica</option>
+        <option value="U">U: UCI</option>
+      </select>
+      <div class="toggle-group mobile-only" id="disfMobile" style="display:none;">
+        <div class="toggle-btn"><input type="radio" id="disfM"  name="disfM" value="M"  onchange="document.getElementById('disf-select').value=this.value"><label for="disfM">M<br><small style="font-weight:400;opacity:0.8;">Mecánica</small></label></div>
+        <div class="toggle-btn"><input type="radio" id="disfPS" name="disfM" value="PS" onchange="document.getElementById('disf-select').value=this.value"><label for="disfPS">PS<br><small style="font-weight:400;opacity:0.8;">Psicógena</small></label></div>
+        <div class="toggle-btn"><input type="radio" id="disfS"  name="disfM" value="S"  onchange="document.getElementById('disf-select').value=this.value"><label for="disfS">S<br><small style="font-weight:400;opacity:0.8;">Sarcopénica</small></label></div>
+        <div class="toggle-btn"><input type="radio" id="disfN"  name="disfM" value="N"  onchange="document.getElementById('disf-select').value=this.value"><label for="disfN">N<br><small style="font-weight:400;opacity:0.8;">Neurológica</small></label></div>
+        <div class="toggle-btn"><input type="radio" id="disfI"  name="disfM" value="I"  onchange="document.getElementById('disf-select').value=this.value"><label for="disfI">I<br><small style="font-weight:400;opacity:0.8;">Iatrogénica</small></label></div>
+        <div class="toggle-btn"><input type="radio" id="disfU"  name="disfM" value="U"  onchange="document.getElementById('disf-select').value=this.value"><label for="disfU">U<br><small style="font-weight:400;opacity:0.8;">UCI</small></label></div>
+      </div>
+    </div>
+
+    <!-- ═══ Educación ═══ -->
+    <div class="section">
+      <div class="section-title"><span class="icon">📚</span> Tipo de Educación</div>
+      <div class="toggle-group">
+        <div class="toggle-btn"><input type="checkbox" id="egCheck" name="eg" value="1"><label for="egCheck">EG</label></div>
+        <div class="toggle-btn"><input type="checkbox" id="efCheck" name="ef" value="1"><label for="efCheck">EF</label></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="submit-bar">
+    <button type="button" class="submit-btn" id="submitBtn" onclick="guardarDatos()">Enviar Formulario</button>
+  </div>
+
+  <script>
+    // ══════════════════════════════════════
+    // Catálogos
+    // ══════════════════════════════════════
+    var REM_OPCIONES = [
+      [1,'ACV'], [2,'TEC'], [3,'LESIÓN MEDULAR'], [4,'NEUROMUSC. AGUDAS'],
+      [5,'NEUROMUSC. CRÓNICAS'], [6,'DISRAFIAS ESPINALES'], [7,'OTRAS NEUROLÓGICAS'],
+      [8,'TRAST. NEURODESARROLLO'], [9,'PARÁLISIS CEREBRAL'], [10,'RN ALTO RIESGO'],
+      [11,'SÍND. POST-UCI'], [12,'COVID-19'], [13,'ENF. RESPIRATORIAS'],
+      [14,'ENF. CARDIACAS'], [15,'DOLOR MUSCULOESQ.'], [16,'ARTRITIS REUMATOIDEA'],
+      [17,'OTRAS REUMATOLÓGICAS'], [18,'TRAUMATOLÓGICOS'], [19,'PRE/POST QUIRÚRGICOS'],
+      [20,'ONCOLÓGICOS'], [21,'GENITOURINARIAS'], [22,'AMPUTACIÓN'], [23,'QUEMADOS'],
+      [24,'SENSORIALES AUDIT.'], [25,'SENSORIALES VISUALES'],
+      [26,'TRAST. ESPECTRO AUTISTA'], [27,'OTROS']
+    ];
+
+    var ORIGEN_OPCIONES = [
+      [1,'273 MEDICINA INTERNA'], [2,'274 NEUROLOGÍA'], [3,'275 REUMATOLOGÍA'],
+      [4,'276 CARDIOLOGÍA'], [5,'277 DERMATOLOGÍA'], [6,'280 PSIQUIATRÍA'],
+      [7,'282 NEUMOLOGÍA'], [8,'285 NEFROLOGÍA'], [9,'287 HEMATOLOGÍA'],
+      [10,'289 FISIATRÍA'], [11,'290 GASTROENTEROLOGÍA'], [12,'309 CIRUGÍA GENERAL'],
+      [13,'311 UROLOGÍA'], [14,'317 OFTALMOLOGÍA'], [15,'318 CIRUGÍA VASCULAR'],
+      [16,'319 ORL'], [17,'321 PROCTOLOGÍA'], [18,'326 TRAUMATOLOGÍA'],
+      [19,'328 PEDIATRÍA'], [20,'329 NEONATOLOGÍA'], [21,'331 NEUROLOGÍA PED.'],
+      [22,'351 CIRUGÍA PED.'], [23,'353 GINECOLOGÍA'], [24,'354 OBSTETRICIA'],
+      [25,'356 ODONTOLOGÍA'], [26,'631 C. COSTOS EXTERNO']
+    ];
+
+    var INTERVENCIONES = ['FMO','MTXD','Voz','Habla','Lenguaje','OFAS','ECOG'];
+
+    function poblarCatalogos() {
+      var remSel = document.getElementById('rem1Select');
+      var remTbody = document.getElementById('tablaRemBody');
+      REM_OPCIONES.forEach(function (o) {
+        remSel.add(new Option(o[0] + ' - ' + o[1], o[0]));
+        var tr = remTbody.insertRow();
+        tr.insertCell().textContent = o[0];
+        tr.insertCell().textContent = o[1];
+      });
+
+      var origenSel = document.getElementById('origenSelect');
+      var origenTbody = document.getElementById('tablaOrigenBody');
+      ORIGEN_OPCIONES.forEach(function (o) {
+        origenSel.add(new Option(o[0] + ' - ' + o[1], o[0]));
+        var tr = origenTbody.insertRow();
+        tr.insertCell().textContent = o[0];
+        tr.insertCell().textContent = o[1];
+      });
+
+      var grid = document.getElementById('intervencionesGrid');
+      INTERVENCIONES.forEach(function (nombre) {
+        var id = 'intervencion' + nombre;
+        var div = document.createElement('div');
+        div.innerHTML =
+          '<label class="field-label">' + nombre + '</label>' +
+          '<div class="stepper">' +
+            '<button type="button" onclick="cambiarValor(\'' + id + '\',-1)">−</button>' +
+            '<input type="number" id="' + id + '" value="" inputmode="numeric">' +
+            '<button type="button" onclick="cambiarValor(\'' + id + '\',1)">+</button>' +
+          '</div>';
+        grid.appendChild(div);
+      });
+    }
+
+    // ══════════════════════════════════════
+    // Calendario
+    // ══════════════════════════════════════
+    var calYear, calMonth, calSelectedDay;
+
+    function initCalendar() {
+      var now = new Date();
+      calYear = now.getFullYear();
+      calMonth = now.getMonth();
+      calSelectedDay = now.getDate();
+      setFechaValue(calYear, calMonth, calSelectedDay);
+      renderCalendar();
+    }
+
+    function setFechaValue(y, m, d) {
+      document.getElementById('fecha').value =
+        y + '-' + String(m + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    }
+
+    function renderCalendar() {
+      var container = document.getElementById('calContainer');
+      var firstDay = new Date(calYear, calMonth, 1).getDay();
+      var daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+      var today = new Date();
+      var meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+      var sel = document.getElementById('fecha').value.split('-');
+      var selY = parseInt(sel[0], 10), selM = parseInt(sel[1], 10) - 1, selD = parseInt(sel[2], 10);
+
+      var html =
+        '<div class="cal-header">' +
+          '<button type="button" class="cal-nav" onclick="changeMonth(-1)">◀</button>' +
+          '<span>' + meses[calMonth] + ' ' + calYear + '</span>' +
+          '<button type="button" class="cal-nav" onclick="changeMonth(1)">▶</button>' +
+        '</div>' +
+        '<div class="cal-weekdays"><span>Do</span><span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sa</span></div>' +
+        '<div class="cal-days">';
+
+      for (var i = 0; i < firstDay; i++) html += '<div class="cal-day empty"></div>';
+
+      for (var d = 1; d <= daysInMonth; d++) {
+        var classes = 'cal-day';
+        if (d === today.getDate() && calMonth === today.getMonth() && calYear === today.getFullYear()) classes += ' today';
+        if (d === selD && calMonth === selM && calYear === selY) classes += ' selected';
+        html += '<button type="button" class="' + classes + '" onclick="selectDay(' + d + ')">' + d + '</button>';
+      }
+
+      container.innerHTML = html + '</div>';
+    }
+
+    function changeMonth(delta) {
+      calMonth += delta;
+      if (calMonth > 11) { calMonth = 0; calYear++; }
+      if (calMonth < 0)  { calMonth = 11; calYear--; }
+      renderCalendar();
+    }
+
+    function selectDay(d) {
+      calSelectedDay = d;
+      setFechaValue(calYear, calMonth, d);
+      renderCalendar();
+    }
+
+    // ══════════════════════════════════════
+    // Radios que se pueden desmarcar
+    // ══════════════════════════════════════
+    function enableUncheckableRadios(name) {
+      document.querySelectorAll('input[name="' + name + '"]').forEach(function (radio) {
+        radio.addEventListener('click', function () {
+          if (this.dataset.wasChecked === 'true') {
+            this.checked = false;
+            this.dataset.wasChecked = 'false';
+          } else {
+            document.querySelectorAll('input[name="' + name + '"]').forEach(function (r) { r.dataset.wasChecked = 'false'; });
+            this.dataset.wasChecked = 'true';
+          }
+        });
+      });
+    }
+
+    function cambiarValor(id, cambio) {
+      var input = document.getElementById(id);
+      if (!input) return;
+      var valor = (parseFloat(input.value) || 0) + cambio;
+      input.value = valor < 0 ? 0 : valor;
+    }
+
+    // ══════════════════════════════════════
+    // Diagnóstico 2
+    // ══════════════════════════════════════
+    var diagnosticoCounter = 1;
+
+    function agregarDiagnostico() {
+      if (diagnosticoCounter >= 2) { eliminarDiagnostico(); return; }
+      diagnosticoCounter = 2;
+
+      var opciones = '<option value="">Seleccionar REM...</option>';
+      REM_OPCIONES.forEach(function (o) { opciones += '<option value="' + o[0] + '">' + o[0] + ' - ' + o[1] + '</option>'; });
+
+      document.getElementById('diagnosticoContainer').innerHTML =
+        '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">' +
+          '<label class="field-label" for="diagnostico2Text">Diagnóstico 2</label>' +
+          '<input type="text" id="diagnostico2Text" placeholder="Diagnóstico">' +
+          '<div style="margin-top:10px;">' +
+            '<label class="field-label" for="rem2">REM 2</label>' +
+            '<input type="text" id="rem2" inputmode="numeric" placeholder="N° REM" class="desktop-only" style="display:block;">' +
+            '<select id="rem2Select" class="mobile-only" style="display:none;" onchange="document.getElementById(\'rem2\').value = this.value;">' + opciones + '</select>' +
+          '</div>' +
+        '</div>';
+
+      var boton = document.getElementById('botonDiagnostico');
+      boton.textContent = '− Eliminar Diagnóstico 2';
+      boton.style.borderColor = 'var(--danger)';
+      boton.style.color = 'var(--danger)';
+    }
+
+    function eliminarDiagnostico() {
+      document.getElementById('diagnosticoContainer').innerHTML = '';
+      diagnosticoCounter = 1;
+      var boton = document.getElementById('botonDiagnostico');
+      boton.textContent = '+ Agregar Diagnóstico 2';
+      boton.style.borderColor = 'var(--primary)';
+      boton.style.color = 'var(--primary)';
+    }
+
+    // ══════════════════════════════════════
+    // Búsqueda por cama
+    // ══════════════════════════════════════
+    function buscarPacientePorCamaHandler() {
+      var cama = document.getElementById('cama').value.trim();
+      if (!cama) return;
+      google.script.run
+        .withSuccessHandler(autorellenarCampos)
+        .withFailureHandler(function (e) { showToast('Error al buscar: ' + e.message, 'error'); })
+        .buscarPacientePorCama(cama);
+    }
+
+    function autorellenarCampos(datos) {
+      if (!datos) {
+        showToast('Cama sin paciente activo. Ingrésalo por RUT.', 'error');
+        return;
+      }
+      setValor('nombrePaciente', datos.nombre);
+      setValor('edad', datos.edad);
+      setValor('rut', datos.rut);
+      marcarRadio('sexo', datos.sexo);
+
+      setValor('diagnostico1Text', datos.diagnostico1);
+      setValor('rem1', datos.rem1);
+      setSelect('rem1Select', datos.rem1);
+
+      // Origen y diagnóstico 2 ya venían en la respuesta, pero la versión anterior
+      // los descartaba y había que retipearlos en cada sesión.
+      setValor('origen', datos.origen);
+      setSelect('origenSelect', datos.origen);
+
+      if (datos.diagnostico2 || datos.rem2) {
+        if (!document.getElementById('diagnostico2Text')) agregarDiagnostico();
+        setValor('diagnostico2Text', datos.diagnostico2);
+        setValor('rem2', datos.rem2);
+        setSelect('rem2Select', datos.rem2);
+      }
+
+      ocultarAviso();
+      showToast('Paciente encontrado', 'success');
+    }
+
+    // ══════════════════════════════════════
+    // Búsqueda por RUT — paciente conocido
+    // ══════════════════════════════════════
+    var ultimoRutBuscado = '';
+
+    function buscarPacientePorRutHandler() {
+      var rut = document.getElementById('rut').value.trim().toUpperCase();
+      document.getElementById('rut').value = rut;
+
+      var normalizado = rut.replace(/[^0-9K]/g, '');
+      if (normalizado.length < 7) { ocultarAviso(); return; }
+      if (normalizado === ultimoRutBuscado) return;
+      ultimoRutBuscado = normalizado;
+
+      google.script.run
+        .withSuccessHandler(mostrarPacienteConocido)
+        .withFailureHandler(function (e) { showToast('Error al buscar: ' + e.message, 'error'); })
+        .buscarPacientePorRut(rut);
+    }
+
+    function mostrarPacienteConocido(datos) {
+      var aviso = document.getElementById('avisoPaciente');
+
+      if (!datos) {
+        aviso.className = 'aviso nuevo visible';
+        aviso.innerHTML = 'Paciente nuevo. Completa nombre, sexo y edad.';
+        return;
+      }
+
+      // Lo trivial se rellena solo; diagnóstico y cama los pones tú.
+      setValor('nombrePaciente', datos.nombre);
+      setValor('edad', datos.edad);
+      marcarRadio('sexo', datos.sexo);
+
+      var veces = datos.atencionesPrevias === 1 ? '1 atención previa' : datos.atencionesPrevias + ' atenciones previas';
+      var ultima = [datos.ultimoMes, datos.ultimoDia].filter(Boolean).join(' ');
+      var lugar = datos.ultimoServicio ? datos.ultimoServicio + ' cama ' + datos.ultimaCama : '';
+
+      var html = '<strong>Paciente conocido.</strong> Nombre, sexo y edad ya están puestos.' +
+                 '<span class="meta">' + veces +
+                 (ultima ? ' · última: ' + ultima : '') +
+                 (lugar ? ' en ' + lugar : '') +
+                 (datos.egresado ? ' · egresado' : '') + '</span>';
+
+      if (datos.diagnostico1) {
+        html += '<button type="button" onclick="usarDiagnosticoPrevio()">' +
+                'Usar diagnóstico anterior: ' + escapar(datos.diagnostico1) +
+                (datos.rem1 ? ' · REM ' + escapar(datos.rem1) : '') + '</button>';
+      }
+
+      aviso.className = 'aviso conocido visible';
+      aviso.innerHTML = html;
+      aviso.dataset.previo = JSON.stringify(datos);
+
+      showToast('Datos recuperados. Verifica la edad.', 'success');
+    }
+
+    function usarDiagnosticoPrevio() {
+      var aviso = document.getElementById('avisoPaciente');
+      if (!aviso.dataset.previo) return;
+      var d = JSON.parse(aviso.dataset.previo);
+
+      setValor('diagnostico1Text', d.diagnostico1);
+      setValor('rem1', d.rem1);
+      setSelect('rem1Select', d.rem1);
+      setValor('origen', d.origen);
+      setSelect('origenSelect', d.origen);
+
+      if (d.diagnostico2 || d.rem2) {
+        if (!document.getElementById('diagnostico2Text')) agregarDiagnostico();
+        setValor('diagnostico2Text', d.diagnostico2);
+        setValor('rem2', d.rem2);
+        setSelect('rem2Select', d.rem2);
+      }
+      showToast('Diagnóstico copiado', 'success');
+    }
+
+    function ocultarAviso() {
+      var aviso = document.getElementById('avisoPaciente');
+      aviso.className = 'aviso';
+      aviso.innerHTML = '';
+    }
+
+    // ══════════════════════════════════════
+    // Utilidades
+    // ══════════════════════════════════════
+    function setValor(id, valor) {
+      var el = document.getElementById(id);
+      if (el) el.value = (valor === null || valor === undefined) ? '' : valor;
+    }
+
+    function setSelect(id, valor) {
+      var el = document.getElementById(id);
+      if (el) el.value = (valor === null || valor === undefined) ? '' : String(valor);
+    }
+
+    function marcarRadio(name, valor) {
+      if (!valor) return;
+      var radio = document.querySelector('input[name="' + name + '"][value="' + valor + '"]');
+      if (radio) { radio.checked = true; radio.dataset.wasChecked = 'true'; }
+    }
+
+    function escapar(texto) {
+      var div = document.createElement('div');
+      div.textContent = texto;
+      return div.innerHTML;
+    }
+
+    function showToast(msg, type) {
+      var t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'toast ' + type + ' show';
+      setTimeout(function () { t.className = 'toast'; }, 3000);
+    }
+
+    // ══════════════════════════════════════
+    // Opciones desde la hoja Tablas
+    // ══════════════════════════════════════
+    function cargarOpciones() {
+      google.script.run
+        .withSuccessHandler(function (opciones) {
+          var sSelect = document.getElementById('servicio');
+          opciones.servicios.forEach(function (s) { sSelect.add(new Option(s, s)); });
+          var fSelect = document.getElementById('fonoaudiólogo');
+          opciones.fonoaudiólogos.forEach(function (f) { fSelect.add(new Option(f, f)); });
+        })
+        .withFailureHandler(function (e) { showToast('No se pudieron cargar las listas: ' + e.message, 'error'); })
+        .getOpcionesFormulario();
+    }
+
+    // ══════════════════════════════════════
+    // Validación y guardado
+    // ══════════════════════════════════════
+    function validar() {
+      var faltan = [];
+      document.querySelectorAll('.campo-faltante').forEach(function (el) { el.classList.remove('campo-faltante'); });
+
+      function req(id, etiqueta) {
+        var el = document.getElementById(id);
+        if (!el || !String(el.value).trim()) {
+          faltan.push(etiqueta);
+          if (el) el.classList.add('campo-faltante');
+          return false;
+        }
+        return true;
+      }
+
+      req('servicio', 'Servicio');
+      req('fonoaudiólogo', 'Fonoaudiólogo/a');
+      req('cama', 'N° de cama');
+      req('rut', 'RUT');
+      req('nombrePaciente', 'Nombre');
+      req('edad', 'Edad');
+      req('diagnostico1Text', 'Diagnóstico 1');
+      req('rem1', 'REM 1');
+
+      if (!document.querySelector('input[name="sexo"]:checked')) faltan.push('Sexo');
+
+      return faltan;
+    }
+
+    function guardarDatos() {
+      var faltan = validar();
+      if (faltan.length) {
+        showToast('Falta: ' + faltan.join(', '), 'error');
+        var primero = document.querySelector('.campo-faltante');
+        if (primero) primero.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+
+      var btn = document.getElementById('submitBtn');
+      btn.disabled = true;
+      document.getElementById('loadingOverlay').classList.add('active');
+
+      var intervenciones = {};
+      INTERVENCIONES.forEach(function (nombre) {
+        intervenciones[nombre] = document.getElementById('intervencion' + nombre).value || 0;
+      });
+      intervenciones.DISF = document.getElementById('disf-select').value;
+
+      var sexoSel = document.querySelector('input[name="sexo"]:checked');
+      var tipoEvalSel = document.querySelector('input[name="tipoEvaluacion"]:checked');
+
+      var data = {
+        condicionHospitalizacion: Array.prototype.map.call(
+          document.querySelectorAll('input[name="condicionHospitalizacion"]:checked'),
+          function (el) { return el.value; }),
+        servicio: document.getElementById('servicio').value,
+        fonoaudiólogo: document.getElementById('fonoaudiólogo').value,
+        fecha: document.getElementById('fecha').value,
+        cama: document.getElementById('cama').value.trim(),
+        nombrePaciente: document.getElementById('nombrePaciente').value,
+        sexo: sexoSel ? sexoSel.value : '',
+        edad: document.getElementById('edad').value,
+        rut: document.getElementById('rut').value,
+        diagnosticos: [
+          document.getElementById('diagnostico1Text').value,
+          document.getElementById('diagnostico2Text') ? document.getElementById('diagnostico2Text').value : ''
+        ],
+        rems: [
+          document.getElementById('rem1').value,
+          document.getElementById('rem2') ? document.getElementById('rem2').value : ''
+        ],
+        origen: document.getElementById('origen').value,
+        categorizacion: document.getElementById('categorizacion').value,
+        atencionesRealizadas: document.getElementById('atencionesRealizadas').value || 0,
+        brechas: document.getElementById('brechas').value || 0,
+        suspendidas: document.getElementById('suspendidas').value || '',
+        tipoEvaluacion: tipoEvalSel ? tipoEvalSel.value : '',
+        evaluaciones: Array.prototype.map.call(
+          document.querySelectorAll('input[name="evaluacion"]:checked'),
+          function (el) { return el.value; }),
+        intervenciones: intervenciones,
+        eg: document.querySelector('input[name="eg"]:checked') ? 1 : 0,
+        ef: document.querySelector('input[name="ef"]:checked') ? 1 : 0
+      };
+
+      google.script.run
+        .withSuccessHandler(function (res) {
+          document.getElementById('loadingOverlay').classList.remove('active');
+          btn.disabled = false;
+          showToast('Guardado en la fila ' + res.fila, 'success');
+          try { google.script.host.close(); } catch (e) { limpiarSesion(); }
+        })
+        .withFailureHandler(function (error) {
+          document.getElementById('loadingOverlay').classList.remove('active');
+          btn.disabled = false;
+          showToast(error.message, 'error');
+        })
+        .guardarDatosFormulario(data);
+    }
+
+    /** Deja listo el formulario para el paciente siguiente, sin recargar la página. */
+    function limpiarSesion() {
+      ['cama','rut','nombrePaciente','edad','diagnostico1Text','rem1','origen','suspendidas',
+       'atencionesRealizadas','brechas'].forEach(function (id) { setValor(id, ''); });
+      setSelect('rem1Select', ''); setSelect('origenSelect', ''); setSelect('categorizacion', '');
+      setSelect('disf-select', '');
+      INTERVENCIONES.forEach(function (n) { setValor('intervencion' + n, ''); });
+      document.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(function (el) {
+        if (el.name === 'sexo' || el.name === 'condicionHospitalizacion' || el.name === 'tipoEvaluacion' ||
+            el.name === 'evaluacion' || el.name === 'categorizacionM' || el.name === 'disfM' ||
+            el.name === 'eg' || el.name === 'ef') {
+          el.checked = false;
+          el.dataset.wasChecked = 'false';
+        }
+      });
+      eliminarDiagnostico();
+      ocultarAviso();
+      ultimoRutBuscado = '';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // ══════════════════════════════════════
+    // Init
+    // ══════════════════════════════════════
+    document.addEventListener('DOMContentLoaded', function () {
+      poblarCatalogos();
+      initCalendar();
+      cargarOpciones();
+
+      document.getElementById('cama').addEventListener('change', buscarPacientePorCamaHandler);
+      document.getElementById('rut').addEventListener('change', buscarPacientePorRutHandler);
+
+      enableUncheckableRadios('condicionHospitalizacion');
+      enableUncheckableRadios('tipoEvaluacion');
+      enableUncheckableRadios('categorizacionM');
+      enableUncheckableRadios('disfM');
+    });
+  </script>
+</body>
+</html>

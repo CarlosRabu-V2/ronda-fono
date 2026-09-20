@@ -1,0 +1,12 @@
+# Datos de pacientes: NUNCA en el repositorio.
+*.csv
+*.xlsx
+*.xls
+_local/
+# Guías con el análisis del servicio: se quedan en el computador.
+guias/
+
+# Claves
+*clave*
+*secret*
+*.key

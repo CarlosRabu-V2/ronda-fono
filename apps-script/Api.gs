@@ -221,12 +221,30 @@ function construirCenso_(fono) {
     return (parseInt(a.cama, 10) || 0) - (parseInt(b.cama, 10) || 0);
   });
 
+  // Cuando la ronda sale vacía hay que poder decir por qué. Sin esto, la
+  // pantalla queda en blanco y no se distingue "no hay nadie hospitalizado"
+  // de "la app no está leyendo la planilla".
+  var masReciente = null, totalFilas = 0;
+  Object.keys(porRut).forEach(function (r) {
+    totalFilas += conteo[r];
+    var f = porRut[r].fecha;
+    if (f && (!masReciente || f > masReciente)) masReciente = f;
+  });
+
   return {
     ok: true,
     generado: Utilities.formatDate(hoy, Session.getScriptTimeZone(), "yyyy-MM-dd'T'HH:mm:ss"),
     diasCenso: DIAS_CENSO,
     pacientes: activos,
     egresos: egresosRecientes,
+    diagnostico: {
+      filasLeidas: datos.length,
+      filasDelProfesional: totalFilas,
+      personasDistintas: Object.keys(porRut).length,
+      registroMasReciente: masReciente
+        ? Utilities.formatDate(masReciente, Session.getScriptTimeZone(), 'yyyy-MM-dd') : '',
+      hoja: HOJA_DATOS
+    },
     catalogos: getOpcionesFormulario()
   };
 }

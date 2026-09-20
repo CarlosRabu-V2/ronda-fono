@@ -177,6 +177,8 @@ const estado = {
   censo: [],
   egresos: [],
   catalogos: { servicios: [], fonoaudiólogos: [] },
+  diagnostico: null,   // por qué la ronda salió vacía, cuando sale vacía
+  diasCenso: 14,
   outbox: [],
   vista: 'ronda',
   busqueda: '',
@@ -343,10 +345,14 @@ async function refrescarCenso({ silencioso = false } = {}) {
     estado.censo = j.pacientes || [];
     estado.egresos = j.egresos || [];
     estado.catalogos = j.catalogos || estado.catalogos;
+    estado.diagnostico = j.diagnostico || null;
+    if (j.diasCenso) estado.diasCenso = j.diasCenso;
     await DB.reemplazar('censo', estado.censo);
     await DB.guardar('config', {
       egresos: estado.egresos,
       catalogos: estado.catalogos,
+      diagnostico: estado.diagnostico,
+      diasCenso: estado.diasCenso,
       generado: j.generado
     }, 'cache');
     if (!silencioso) toast(`Censo al día: ${estado.censo.length} pacientes`, 'ok');
@@ -409,6 +415,50 @@ function pacientesFiltrados() {
   );
 }
 
+/**
+ * Una ronda vacía tiene tres causas muy distintas y conviene distinguirlas:
+ * que no haya nadie hospitalizado, que el nombre elegido no coincida con el de
+ * la planilla, o que la planilla no se esté leyendo. En blanco se confunden.
+ */
+function motivoRondaVacia() {
+  const d = estado.diagnostico;
+  const dias = estado.diasCenso || 14;
+
+  if (!d) return `<p>No hay pacientes activos. Usa Ingreso para agregar uno.</p>`;
+
+  if (!d.filasLeidas) {
+    return `<p>La hoja <strong>${esc(d.hoja || '')}</strong> está vacía.</p>
+            <p class="meta">Revisa el nombre de la pestaña en Codigo.gs.</p>`;
+  }
+
+  if (!d.filasDelProfesional) {
+    return `<p>La planilla no tiene registros a nombre de
+              <strong>${esc(estado.config.fono || '')}</strong>.</p>
+            <p class="meta">Tiene ${fmtMil(d.filasLeidas)} filas en total.
+              Puede que el nombre no esté escrito igual que en la columna
+              FONOAUDIÓLOGA: revísalo en Configuración.</p>`;
+  }
+
+  const ultimo = fechaCorta(d.registroMasReciente);
+  return `<p>Nadie con atención registrada en los últimos ${dias} días.</p>
+          <p class="meta">${ultimo
+            ? `Tu registro más reciente en la planilla es del <strong>${esc(ultimo)}</strong>.`
+            : ''} La ronda solo muestra a quienes siguen hospitalizados.</p>
+          <p class="meta">Usa <strong>Ingreso</strong> para agregar el primer paciente de hoy.</p>`;
+}
+
+const fmtMil = (n) => Number(n || 0).toLocaleString('es-CL');
+
+/** "2026-05-28" -> "28 de mayo". Sin año: la planilla no lo guarda. */
+function fechaCorta(iso) {
+  if (!iso) return '';
+  const p = String(iso).split('-');
+  const m = parseInt(p[1], 10);
+  const meses = ['enero','febrero','marzo','abril','mayo','junio','julio',
+                 'agosto','septiembre','octubre','noviembre','diciembre'];
+  return (meses[m - 1]) ? `${parseInt(p[2], 10)} de ${meses[m - 1]}` : '';
+}
+
 function pintarRonda() {
   const cont = document.getElementById('lista');
   const reg = registradosHoy();
@@ -425,9 +475,8 @@ function pintarRonda() {
   document.getElementById('progresoRelleno').style.width = pct + '%';
 
   if (!lista.length) {
-    cont.innerHTML = `<div class="vacio">${ICO.cama}<p>${
-      estado.busqueda ? 'Sin resultados para esa búsqueda.'
-                      : 'No hay pacientes activos. Usa Ingreso para agregar uno.'}</p></div>`;
+    cont.innerHTML = `<div class="vacio">${ICO.cama}${
+      estado.busqueda ? '<p>Sin resultados para esa búsqueda.</p>' : motivoRondaVacia()}</div>`;
     document.getElementById('bloqueEgresos').classList.add('oculto');
     return;
   }
@@ -528,8 +577,13 @@ async function iniciar() {
   estado.outbox = await DB.todos('outbox');
   estado.censo  = await DB.todos('censo');
 
-  const cache = await DB.get('config', 'cache');
-  if (cache) { estado.egresos = cache.egresos || []; estado.catalogos = cache.catalogos || estado.catalogos; }
+  const guardado = await DB.get('config', 'cache');
+  if (guardado) {
+    estado.egresos     = guardado.egresos || [];
+    estado.catalogos   = guardado.catalogos || estado.catalogos;
+    estado.diagnostico = guardado.diagnostico || null;
+    estado.diasCenso   = guardado.diasCenso || estado.diasCenso;
+  }
 
   const tema = await DB.get('config', 'tema');
   if (tema) document.documentElement.dataset.tema = tema;

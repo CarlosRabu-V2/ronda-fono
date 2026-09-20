@@ -10,7 +10,10 @@
 const inf = {
   mes: null,
   datos: null,      // dashboard del mes
-  nomina: null,
+  cuando: 0,
+  refrescando: false,
+  aviso: null,
+  nomina: null,     // se pide solo al generar el PDF; nunca se guarda
   resumen: '',
   incluirResumen: true,
   generando: false,
@@ -51,32 +54,43 @@ API.resumen = async function (mes, fono, anterior) {
 
 async function abrirInformes() {
   if (!inf.mes) inf.mes = mesActual();
+
+  // Comparte caché con el dashboard: son el mismo cálculo.
+  const c = cache.leer(`dash:${inf.mes}:${estado.config.fono || ''}`);
+  inf.datos  = c ? c.datos  : null;
+  inf.cuando = c ? c.cuando : 0;
+  inf.error  = null;
+  inf.aviso  = null;
   pintarInformes();
-  await cargarInformes();
+
+  if (!c || Date.now() - c.cuando > FRESCO_MS) await cargarInformes(!!c);
 }
 
-async function cargarInformes() {
+async function cargarInformes(enSegundoPlano) {
   if (!navigator.onLine) {
-    inf.datos = null;
-    inf.error = 'Sin conexión. Los informes se arman con los datos de la planilla.';
+    if (inf.datos) inf.aviso = 'Sin conexión · datos de ' + hace(inf.cuando);
+    else inf.error = 'Sin conexión. Los informes se arman con los datos de la planilla.';
     pintarInformes();
     return;
   }
-  inf.cargando = true;
+
+  inf.cargando = !enSegundoPlano;
+  inf.refrescando = !!enSegundoPlano;
   inf.error = null;
+  inf.aviso = null;
   pintarInformes();
+
   try {
-    const [d, n] = await Promise.all([
-      API.dashboard(inf.mes, estado.config.fono),
-      API.nomina(inf.mes, estado.config.fono)
-    ]);
+    const d = await API.dashboard(inf.mes, estado.config.fono);
     inf.datos = d;
-    inf.nomina = n;
+    inf.cuando = Date.now();
+    cache.escribir(`dash:${inf.mes}:${estado.config.fono || ''}`, d);
   } catch (err) {
-    inf.datos = null;
-    inf.error = 'No se pudo cargar: ' + err.message;
+    if (inf.datos) inf.aviso = 'No se pudo actualizar · datos de ' + hace(inf.cuando);
+    else inf.error = 'No se pudo cargar: ' + err.message;
   }
   inf.cargando = false;
+  inf.refrescando = false;
   pintarInformes();
 }
 
@@ -93,8 +107,11 @@ function pintarInformes() {
           <div class="eyebrow">Fonoaudiología · hospitalario</div>
           <h1>Informes</h1>
         </div>
-        <button class="icon-btn" id="infRefrescar">${ICO.volver}</button>
+        <button class="icon-btn ${inf.refrescando ? 'girando' : ''}" id="infRefrescar">${ICO.volver}</button>
       </div>
+      ${inf.datos ? `<div class="frescura ${inf.aviso ? 'alerta' : ''}">${
+        esc(inf.aviso || (inf.refrescando ? 'Actualizando…' : 'Actualizado ' + hace(inf.cuando)))
+      }</div>` : ''}
       <div class="filtros">
         <label class="filtro">${ICO.cal}
           <select id="infMes">${mesesDisponibles().map(([v, t]) =>
@@ -179,7 +196,7 @@ function pintarInformes() {
 function conectarInformes() {
   const sel = document.getElementById('infMes');
   if (sel) sel.addEventListener('change', (e) => {
-    inf.mes = e.target.value; inf.resumen = ''; cargarInformes();
+    inf.mes = e.target.value; inf.resumen = ''; inf.nomina = null; abrirInformes();
   });
 
   const ref = document.getElementById('infRefrescar');
@@ -234,10 +251,26 @@ async function generarResumen() {
    GENERACIÓN DEL PDF
    ══════════════════════════════════════════════════════════════ */
 
-function descargarPdf() {
+async function descargarPdf() {
   if (document.getElementById('infResumen')) {
     inf.resumen = document.getElementById('infResumen').value;
   }
+
+  // La nómina lleva nombres y RUT, así que se pide en este momento y solo si
+  // va incluida. No se guarda en el teléfono: vive lo que dura el PDF.
+  if (inf.secciones.nomina && !inf.nomina) {
+    const btn = document.getElementById('infPdf');
+    if (btn) { btn.disabled = true; btn.textContent = 'Reuniendo la nómina…'; }
+    try {
+      inf.nomina = await API.nomina(inf.mes, estado.config.fono);
+    } catch (err) {
+      pintarInformes();
+      toast('No se pudo obtener la nómina: ' + err.message, 'error');
+      return;
+    }
+    pintarInformes();
+  }
+
   document.getElementById('impresion').innerHTML = armarInforme();
   // El navegador necesita un instante para maquetar antes de medir las páginas.
   requestAnimationFrame(() => setTimeout(() => window.print(), 60));

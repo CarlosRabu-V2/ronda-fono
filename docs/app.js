@@ -125,6 +125,51 @@ const DB = (() => {
 })();
 
 /* ══════════════════════════════════════════════════════════════
+   CACHÉ DE CONSULTAS
+   El dashboard y los informes se calculan en la planilla y tardan. Sin esto,
+   cada cambio de vista rehace el mismo cálculo y la app parece congelada.
+   Se guarda lo ya calculado y se muestra al instante; si está viejo, se
+   refresca por detrás sin tapar la pantalla.
+
+   Solo guarda cifras agregadas. La nómina de pacientes NO se cachea: se pide
+   en el momento de generar el PDF y se descarta al terminar.
+   ══════════════════════════════════════════════════════════════ */
+
+const FRESCO_MS = 10 * 60 * 1000;   // pasados 10 minutos se considera viejo
+
+const cache = {
+  leer(clave) {
+    try {
+      const raw = localStorage.getItem('cache:' + clave);
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      return (o && o.t && o.d) ? { datos: o.d, cuando: o.t } : null;
+    } catch (e) { return null; }      // modo privado o dato corrupto
+  },
+  escribir(clave, datos) {
+    try {
+      localStorage.setItem('cache:' + clave, JSON.stringify({ d: datos, t: Date.now() }));
+    } catch (e) { /* sin cuota: la app funciona igual, solo sin caché */ }
+  },
+  limpiar() {
+    try {
+      Object.keys(localStorage)
+        .filter(k => k.indexOf('cache:') === 0)
+        .forEach(k => localStorage.removeItem(k));
+    } catch (e) { /* nada que limpiar */ }
+  }
+};
+
+/** "recién", "hace 5 min", "hace 2 h". */
+function hace(t) {
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60)    return 'recién';
+  if (s < 3600)  return `hace ${Math.round(s / 60)} min`;
+  if (s < 86400) return `hace ${Math.round(s / 3600)} h`;
+  return `hace ${Math.round(s / 86400)} d`;
+}
+
+/* ══════════════════════════════════════════════════════════════
    ESTADO
    ══════════════════════════════════════════════════════════════ */
 const estado = {

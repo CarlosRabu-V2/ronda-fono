@@ -8,12 +8,98 @@
  */
 
 /**
- * Modelo de Gemini. Los nombres cambian cada cierto tiempo; si la llamada falla
- * con "model not found", cambia esta línea por el modelo vigente en
- * https://aistudio.google.com  (la capa gratuita alcanza de sobra para un resumen
- * mensual: es una llamada al mes).
+ * El modelo NO se escribe a mano. Google retira nombres cada cierto tiempo
+ * ("no longer available to new users") y dejarlo fijo rompe el resumen sin aviso.
+ *
+ * En su lugar se le pregunta a la API qué modelos hay disponibles y se elige uno,
+ * guardándolo para no repetir la consulta. Si el guardado deja de existir, se
+ * descarta y se busca otro. Una llamada al mes cabe de sobra en la capa gratuita.
  */
-var MODELO_GEMINI = 'gemini-2.5-flash';
+var GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/';
+
+/** Palabras que descartan un modelo para este uso. */
+var GEMINI_DESCARTAR = /embedding|aqa|vision|image|imagen|tts|audio|live|native|veo|learnlm/i;
+
+
+/**
+ * Pregunta a la API qué modelos puede usar esta clave y elige el mejor para
+ * redactar el resumen: uno de la familia "flash", que es la más barata y rápida.
+ */
+function descubrirModelo_(clave) {
+  var r = UrlFetchApp.fetch(GEMINI_API + 'models?pageSize=200', {
+    method: 'get',
+    headers: { 'x-goog-api-key': clave },
+    muteHttpExceptions: true
+  });
+  if (r.getResponseCode() !== 200) {
+    throw new Error('No se pudo consultar los modelos de Gemini (' +
+                    r.getResponseCode() + '). Revisa que la clave sea válida.');
+  }
+
+  var lista = (JSON.parse(r.getContentText()).models || []).filter(function (m) {
+    var met = m.supportedGenerationMethods || m.supportedActions || [];
+    return met.indexOf('generateContent') !== -1 && !GEMINI_DESCARTAR.test(m.name);
+  }).map(function (m) { return m.name.replace(/^models\//, ''); });
+
+  if (!lista.length) throw new Error('La clave de Gemini no tiene ningún modelo disponible.');
+
+  // Preferencias, de mejor a peor para este uso.
+  var preferidos = [
+    function (n) { return n === 'gemini-flash-latest'; },
+    function (n) { return /flash/.test(n) && !/lite|preview|exp|thinking/.test(n); },
+    function (n) { return /flash/.test(n) && !/preview|exp/.test(n); },
+    function (n) { return /flash/.test(n); },
+    function (n) { return !/preview|exp/.test(n); },
+    function ()  { return true; }
+  ];
+
+  for (var i = 0; i < preferidos.length; i++) {
+    var c = lista.filter(preferidos[i]).sort();
+    // El último al ordenar es el de número de versión más alto.
+    if (c.length) return c[c.length - 1];
+  }
+  return lista[0];
+}
+
+/** El modelo a usar, recordando el último que funcionó. */
+function modeloGemini_(clave, forzarBusqueda) {
+  var props = PropertiesService.getScriptProperties();
+  if (!forzarBusqueda) {
+    var guardado = props.getProperty('GEMINI_MODEL');
+    if (guardado) return guardado;
+  }
+  var m = descubrirModelo_(clave);
+  props.setProperty('GEMINI_MODEL', m);
+  return m;
+}
+
+/**
+ * Muestra qué modelos acepta tu clave y cuál está en uso.
+ * Ejecútala desde el editor si quieres cambiarlo a mano.
+ */
+function listarModelosGemini() {
+  var clave = PropertiesService.getScriptProperties().getProperty('GEMINI_KEY');
+  if (!clave) { Logger.log('No hay clave guardada. Ejecuta configurarGemini() primero.'); return; }
+
+  var r = UrlFetchApp.fetch(GEMINI_API + 'models?pageSize=200', {
+    method: 'get', headers: { 'x-goog-api-key': clave }, muteHttpExceptions: true
+  });
+  if (r.getResponseCode() !== 200) {
+    Logger.log('Error ' + r.getResponseCode() + ': ' + r.getContentText().slice(0, 300));
+    return;
+  }
+  var models = JSON.parse(r.getContentText()).models || [];
+  Logger.log('MODELOS QUE ACEPTAN generateContent:');
+  models.forEach(function (m) {
+    var met = m.supportedGenerationMethods || m.supportedActions || [];
+    if (met.indexOf('generateContent') !== -1) Logger.log('  ' + m.name.replace(/^models\//, ''));
+  });
+  Logger.log('');
+  Logger.log('En uso ahora: ' + (PropertiesService.getScriptProperties()
+                                   .getProperty('GEMINI_MODEL') || '(aun sin elegir)'));
+  Logger.log('Para fijar uno a mano, ejecuta:');
+  Logger.log("  PropertiesService.getScriptProperties().setProperty('GEMINI_MODEL', 'el-que-quieras')");
+}
 
 
 // ══════════════════════════════════════════════════════════
@@ -216,18 +302,30 @@ function construirResumenIA_(mes, fono, mesAnterior) {
     '- Los datos vienen sin identificar: no te refieras a pacientes individuales.\n\n' +
     'Datos:\n' + JSON.stringify(datos);
 
-  var respuesta = UrlFetchApp.fetch(
-    'https://generativelanguage.googleapis.com/v1beta/models/' + MODELO_GEMINI + ':generateContent',
-    {
+  var cuerpoPeticion = JSON.stringify({
+    contents: [{ parts: [{ text: instruccion }] }],
+    generationConfig: { temperature: 0.3, maxOutputTokens: 800 }
+  });
+
+  function pedir(modelo) {
+    return UrlFetchApp.fetch(GEMINI_API + 'models/' + modelo + ':generateContent', {
       method: 'post',
       contentType: 'application/json',
       headers: { 'x-goog-api-key': clave },
-      payload: JSON.stringify({
-        contents: [{ parts: [{ text: instruccion }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 800 }
-      }),
+      payload: cuerpoPeticion,
       muteHttpExceptions: true
     });
+  }
+
+  var modelo = modeloGemini_(clave, false);
+  var respuesta = pedir(modelo);
+
+  // Google retira modelos sin avisar. Si el guardado ya no existe, se busca otro
+  // y se reintenta una vez, para que el resumen no se caiga por un cambio ajeno.
+  if (respuesta.getResponseCode() === 404) {
+    modelo = modeloGemini_(clave, true);
+    respuesta = pedir(modelo);
+  }
 
   var codigo = respuesta.getResponseCode();
   var cuerpo = respuesta.getContentText();
@@ -235,7 +333,7 @@ function construirResumenIA_(mes, fono, mesAnterior) {
   if (codigo !== 200) {
     var detalle = cuerpo;
     try { detalle = JSON.parse(cuerpo).error.message; } catch (e) { /* texto plano */ }
-    throw new Error('Gemini respondió ' + codigo + ': ' + detalle);
+    throw new Error('Gemini respondió ' + codigo + ' con el modelo ' + modelo + ': ' + detalle);
   }
 
   var json = JSON.parse(cuerpo);
@@ -251,7 +349,7 @@ function construirResumenIA_(mes, fono, mesAnterior) {
     ok: true,
     mes: mes,
     resumen: texto.trim(),
-    modelo: MODELO_GEMINI,
+    modelo: modelo,
     enviado: Object.keys(datos.mesActual)   // qué secciones viajaron, para que puedas auditarlo
   };
 }

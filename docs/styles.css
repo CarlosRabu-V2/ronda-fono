@@ -618,3 +618,18 @@ main { padding: 0 var(--margin) 148px; }
   .pr-tabla thead { display: table-header-group; }   /* la cabecera se repite en cada página */
   .pr-tabla tr.tot { font-weight: 700; background: #f2f2f2; }
 }
+
+/* Indicador de frescura de los datos (caché) */
+.frescura {
+  font-size: 11px; color: var(--text-muted);
+  padding: 2px 2px 6px; display: flex; align-items: center; gap: 5px;
+}
+.frescura.alerta { color: var(--warning); }
+.frescura::before {
+  content: ''; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--success); flex-shrink: 0;
+}
+.frescura.alerta::before { background: var(--warning); }
+
+@keyframes girar { to { transform: rotate(360deg); } }
+.icon-btn.girando svg { animation: girar 1s linear infinite; }

@@ -179,6 +179,7 @@ const estado = {
   catalogos: { servicios: [], fonoaudiólogos: [] },
   diagnostico: null,   // por qué la ronda salió vacía, cuando sale vacía
   diasCenso: 14,
+  diasPorDefecto: 14,
   outbox: [],
   vista: 'ronda',
   busqueda: '',
@@ -223,9 +224,10 @@ function diasSugeridos(categorizacion) {
    API
    ══════════════════════════════════════════════════════════════ */
 const API = {
-  async censo() {
+  async censo(dias) {
     const { url, token, fono } = estado.config;
-    const q = `${url}?api=censo&token=${encodeURIComponent(token)}&fono=${encodeURIComponent(fono || '')}`;
+    const q = `${url}?api=censo&token=${encodeURIComponent(token)}&fono=${encodeURIComponent(fono || '')}` +
+              (dias ? `&dias=${encodeURIComponent(dias)}` : '');
     const r = await fetch(q, { method: 'GET', redirect: 'follow' });
     const j = await r.json();
     if (!j.ok) throw new Error(j.error || 'El servidor rechazó la petición.');
@@ -335,27 +337,32 @@ async function encolar(sesion) {
 /* ══════════════════════════════════════════════════════════════
    CENSO
    ══════════════════════════════════════════════════════════════ */
-async function refrescarCenso({ silencioso = false } = {}) {
+async function refrescarCenso({ silencioso = false, dias = 0 } = {}) {
   if (!navigator.onLine) {
     if (!silencioso) toast('Sin conexión. Se usa el censo guardado.', 'info');
     return;
   }
   try {
-    const j = await API.censo();
+    const j = await API.censo(dias);
     estado.censo = j.pacientes || [];
     estado.egresos = j.egresos || [];
     estado.catalogos = j.catalogos || estado.catalogos;
     estado.diagnostico = j.diagnostico || null;
     if (j.diasCenso) estado.diasCenso = j.diasCenso;
+    if (j.diasPorDefecto) estado.diasPorDefecto = j.diasPorDefecto;
     await DB.reemplazar('censo', estado.censo);
     await DB.guardar('config', {
       egresos: estado.egresos,
       catalogos: estado.catalogos,
       diagnostico: estado.diagnostico,
       diasCenso: estado.diasCenso,
+      diasPorDefecto: estado.diasPorDefecto,
       generado: j.generado
     }, 'cache');
-    if (!silencioso) toast(`Censo al día: ${estado.censo.length} pacientes`, 'ok');
+    if (!silencioso) {
+      toast(dias ? `${estado.censo.length} pacientes en los últimos ${dias} días`
+                 : `Censo al día: ${estado.censo.length} pacientes`, 'ok');
+    }
   } catch (err) {
     if (!silencioso) toast('No se pudo actualizar: ' + err.message, 'error');
   }
@@ -440,14 +447,38 @@ function motivoRondaVacia() {
   }
 
   const ultimo = fechaCorta(d.registroMasReciente);
+  const brecha = diasDesde(d.registroMasReciente);
+
   return `<p>Nadie con atención registrada en los últimos ${dias} días.</p>
           <p class="meta">${ultimo
-            ? `Tu registro más reciente en la planilla es del <strong>${esc(ultimo)}</strong>.`
+            ? `Tu registro más reciente en la planilla es del <strong>${esc(ultimo)}</strong>${
+                brecha ? `, hace ${brecha} días` : ''}.`
             : ''} La ronda solo muestra a quienes siguen hospitalizados.</p>
-          <p class="meta">Usa <strong>Ingreso</strong> para agregar el primer paciente de hoy.</p>`;
+          ${(brecha && brecha > dias && brecha <= 120) ? `
+            <button class="btn btn-secundario" id="ampliarCenso" style="margin-top:14px">
+              Ver los últimos ${brecha + 1} días
+            </button>
+            <p class="meta" style="margin-top:8px">Por si alguno sigue hospitalizado
+              y no quieres volver a escribirlo.</p>` : `
+            <p class="meta">Usa <strong>Ingreso</strong> para agregar el primer paciente de hoy.</p>`}`;
 }
 
 const fmtMil = (n) => Number(n || 0).toLocaleString('es-CL');
+
+/**
+ * Días entre una fecha ISO y hoy.
+ * Se calcula en UTC a propósito: en Chile el cambio de hora de septiembre hace
+ * que dos fechas separadas por 16 días disten 15 días y 23 horas, y redondear
+ * hacia abajo se comería un día justo en el borde de la ventana del censo.
+ */
+function diasDesde(iso) {
+  if (!iso) return 0;
+  const p = String(iso).split('-').map(Number);
+  if (p.length !== 3 || p.some(isNaN)) return 0;
+  const h = new Date();
+  const dif = Date.UTC(h.getFullYear(), h.getMonth(), h.getDate()) - Date.UTC(p[0], p[1] - 1, p[2]);
+  return Math.max(0, Math.round(dif / 86400000));
+}
 
 /** "2026-05-28" -> "28 de mayo". Sin año: la planilla no lo guarda. */
 function fechaCorta(iso) {
@@ -478,6 +509,14 @@ function pintarRonda() {
     cont.innerHTML = `<div class="vacio">${ICO.cama}${
       estado.busqueda ? '<p>Sin resultados para esa búsqueda.</p>' : motivoRondaVacia()}</div>`;
     document.getElementById('bloqueEgresos').classList.add('oculto');
+
+    const amp = document.getElementById('ampliarCenso');
+    if (amp) amp.addEventListener('click', () => {
+      const d = diasDesde(estado.diagnostico && estado.diagnostico.registroMasReciente) + 1;
+      amp.disabled = true;
+      amp.textContent = 'Buscando…';
+      refrescarCenso({ dias: d });
+    });
     return;
   }
 
@@ -492,7 +531,16 @@ function pintarRonda() {
     arr.sort((a, b) => (parseInt(a.cama, 10) || 0) - (parseInt(b.cama, 10) || 0));
   }
 
-  let html = '';
+  // Con la ventana ampliada pueden aparecer pacientes ya dados de alta sin que
+  // nadie lo registrara. Conviene decirlo antes de que los dé por activos.
+  let html = (estado.diasCenso > estado.diasPorDefecto) ? `
+    <div class="banda info" style="margin-bottom:12px">
+      Viendo los últimos <strong>${estado.diasCenso} días</strong>, no los
+      ${estado.diasPorDefecto} habituales.
+      <span class="meta">Algunos pueden haber egresado ya. Registra una sesión a los
+      que sigan hospitalizados y vuelve a la vista normal con el botón de recargar.</span>
+    </div>` : '';
+
   const ordenados = [...grupos.entries()].sort((a, b) => {
     const d = ordenServicio(a[0]) - ordenServicio(b[0]);
     return d !== 0 ? d : a[0].localeCompare(b[0]);
@@ -582,7 +630,8 @@ async function iniciar() {
     estado.egresos     = guardado.egresos || [];
     estado.catalogos   = guardado.catalogos || estado.catalogos;
     estado.diagnostico = guardado.diagnostico || null;
-    estado.diasCenso   = guardado.diasCenso || estado.diasCenso;
+    estado.diasCenso     = guardado.diasCenso || estado.diasCenso;
+    estado.diasPorDefecto = guardado.diasPorDefecto || estado.diasPorDefecto;
   }
 
   const tema = await DB.get('config', 'tema');

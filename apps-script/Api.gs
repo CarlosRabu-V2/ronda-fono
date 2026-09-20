@@ -114,7 +114,9 @@ function json_(obj) {
 function apiGet_(e) {
   try {
     verificarToken_(e.parameter.token);
-    if (e.parameter.api === 'censo') return json_(construirCenso_(e.parameter.fono));
+    if (e.parameter.api === 'censo') {
+      return json_(construirCenso_(e.parameter.fono, e.parameter.dias));
+    }
     if (e.parameter.api === 'ping')  return json_({ ok: true, hoja: HOJA_DATOS });
     if (e.parameter.api === 'dashboard') {
       var d = construirDashboard_(e.parameter.mes, e.parameter.fono);
@@ -142,7 +144,29 @@ function apiGet_(e) {
  * va. Sin corte, la ronda acumularía pacientes que ya no están. El plazo sale de
  * medir cada cuánto se repiten las sesiones de un mismo paciente.
  */
-function construirCenso_(fono) {
+/**
+ * @param {string|number} [diasPedidos] Amplía la ventana por esta vez. Sirve
+ *   cuando pasaron varios días sin registrar y hay pacientes que siguen
+ *   hospitalizados: sin esto habría que reescribirlos uno por uno.
+ *   Se limita a 120 días; más allá son episodios cerrados con seguridad.
+ */
+/**
+ * Días completos entre dos fechas, contando por día calendario y no por horas.
+ * En UTC a propósito: con el cambio de hora de septiembre, 16 días de
+ * diferencia dan 15 días y 23 horas, y eso dejaba fuera de la ronda a un
+ * paciente que caía justo en el borde.
+ */
+function diasEntre_(desde, hasta) {
+  var a = Date.UTC(desde.getFullYear(), desde.getMonth(), desde.getDate());
+  var b = Date.UTC(hasta.getFullYear(), hasta.getMonth(), hasta.getDate());
+  return Math.round((b - a) / 86400000);
+}
+
+function construirCenso_(fono, diasPedidos) {
+  var dias = parseInt(diasPedidos, 10);
+  if (isNaN(dias) || dias < 1) dias = DIAS_CENSO;
+  dias = Math.min(dias, 120);
+
   var datos = leerDatosBusqueda_();
   var hoy = new Date();
   var anioActual = hoy.getFullYear();
@@ -191,7 +215,7 @@ function construirCenso_(fono) {
 
   Object.keys(porRut).forEach(function (rut) {
     var reg = porRut[rut];
-    var dias = reg.fecha ? Math.floor((hoy - reg.fecha) / 86400000) : 9999;
+    var diasSin = reg.fecha ? diasEntre_(reg.fecha, hoy) : 9999;
 
     var egresado = COLS_EGRESO.some(function (c) { return Number(reg.fila[c]) === 1; });
     var p = filaAPaciente_(reg.fila);
@@ -199,18 +223,18 @@ function construirCenso_(fono) {
     p.categorizacion  = String(reg.fila[COL.CATEGORIZA] || '');
     p.fono            = String(reg.fila[COL.FONO] || '');
     p.ultimaFecha     = reg.fecha ? Utilities.formatDate(reg.fecha, Session.getScriptTimeZone(), 'yyyy-MM-dd') : '';
-    p.diasSinAtencion = dias;
+    p.diasSinAtencion = diasSin;
     p.atencionesPrevias = conteo[rut];
 
     if (egresado) {
-      if (dias <= DIAS_EGRESO) {
+      if (diasSin <= DIAS_EGRESO) {
         p.motivoEgreso = motivoEgreso_(reg.fila);
         // Sin el uuid, la app no puede deshacer el egreso después de recargar
         // el censo. leerDatosBusqueda_ parte en la fila 2 de la hoja.
         p.uuidEgreso = uuidPorFila[reg.indice + 2] || '';
         egresosRecientes.push(p);
       }
-    } else if (dias <= DIAS_CENSO) {
+    } else if (diasSin <= dias) {
       activos.push(p);
     }
   });
@@ -234,7 +258,8 @@ function construirCenso_(fono) {
   return {
     ok: true,
     generado: Utilities.formatDate(hoy, Session.getScriptTimeZone(), "yyyy-MM-dd'T'HH:mm:ss"),
-    diasCenso: DIAS_CENSO,
+    diasCenso: dias,
+    diasPorDefecto: DIAS_CENSO,
     pacientes: activos,
     egresos: egresosRecientes,
     diagnostico: {

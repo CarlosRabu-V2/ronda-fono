@@ -34,6 +34,36 @@ function verificarToken_(token) {
   if (String(token) !== guardado) throw new Error('Clave de acceso incorrecta.');
 }
 
+/**
+ * Muestra de una vez los dos datos que hay que escribir en la app:
+ * la dirección de la aplicación web y la clave de acceso.
+ *
+ * Ejecútala desde el editor y mira el Registro de ejecución.
+ * Es segura de repetir: si ya existe una clave la muestra, no la cambia.
+ */
+function verDatosDeLaApp() {
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty('API_TOKEN');
+  var creada = false;
+
+  if (!token) { token = configurarToken(); creada = true; }
+
+  var url = '';
+  try { url = ScriptApp.getService().getUrl() || ''; } catch (e) { url = ''; }
+
+  Logger.log('══════════════════════════════════════════');
+  Logger.log('DIRECCION DE LA APP WEB');
+  Logger.log(url || '  (todavia no implementada: Implementar -> Nueva implementacion)');
+  Logger.log('');
+  Logger.log('CLAVE DE ACCESO');
+  Logger.log(token);
+  Logger.log('');
+  Logger.log(creada ? 'Se creo una clave nueva ahora.' : 'Esta es la clave que ya estaba guardada.');
+  Logger.log('══════════════════════════════════════════');
+
+  return { url: url, token: token };
+}
+
 function getHojaSync_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var hoja = ss.getSheetByName(HOJA_SYNC);

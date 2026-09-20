@@ -31,7 +31,12 @@ function configurarToken() {
 function verificarToken_(token) {
   var guardado = PropertiesService.getScriptProperties().getProperty('API_TOKEN');
   if (!guardado) throw new Error('Falta ejecutar configurarToken() en el editor de Apps Script.');
-  if (String(token) !== guardado) throw new Error('Clave de acceso incorrecta.');
+
+  // Se comparan recortados: al copiar la clave del registro de ejecución es
+  // fácil arrastrar un espacio o un salto de línea invisible.
+  var recibido = String(token == null ? '' : token).trim();
+  if (recibido === '') throw new Error('No se envió la clave de acceso.');
+  if (recibido !== String(guardado).trim()) throw new Error('Clave de acceso incorrecta.');
 }
 
 /**

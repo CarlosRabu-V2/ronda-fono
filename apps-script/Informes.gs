@@ -25,7 +25,7 @@ var GEMINI_DESCARTAR = /embedding|aqa|vision|image|imagen|tts|audio|live|native|
  * Pregunta a la API qué modelos puede usar esta clave y elige el mejor para
  * redactar el resumen: uno de la familia "flash", que es la más barata y rápida.
  */
-function descubrirModelo_(clave) {
+function descubrirModelo_(clave, excluir) {
   var r = UrlFetchApp.fetch(GEMINI_API + 'models?pageSize=200', {
     method: 'get',
     headers: { 'x-goog-api-key': clave },
@@ -39,9 +39,14 @@ function descubrirModelo_(clave) {
   var lista = (JSON.parse(r.getContentText()).models || []).filter(function (m) {
     var met = m.supportedGenerationMethods || m.supportedActions || [];
     return met.indexOf('generateContent') !== -1 && !GEMINI_DESCARTAR.test(m.name);
-  }).map(function (m) { return m.name.replace(/^models\//, ''); });
+  }).map(function (m) { return m.name.replace(/^models\//, ''); })
+    .filter(function (n) { return n !== excluir; });
 
   if (!lista.length) throw new Error('La clave de Gemini no tiene ningún modelo disponible.');
+
+  // Orden por número de versión, no alfabético: alfabéticamente "gemini-10"
+  // quedaría antes que "gemini-9".
+  var porVersion = function (a, b) { return a.localeCompare(b, 'en', { numeric: true }); };
 
   // Preferencias, de mejor a peor para este uso.
   var preferidos = [
@@ -54,7 +59,7 @@ function descubrirModelo_(clave) {
   ];
 
   for (var i = 0; i < preferidos.length; i++) {
-    var c = lista.filter(preferidos[i]).sort();
+    var c = lista.filter(preferidos[i]).sort(porVersion);
     // El último al ordenar es el de número de versión más alto.
     if (c.length) return c[c.length - 1];
   }
@@ -62,15 +67,25 @@ function descubrirModelo_(clave) {
 }
 
 /** El modelo a usar, recordando el último que funcionó. */
-function modeloGemini_(clave, forzarBusqueda) {
+function modeloGemini_(clave, forzarBusqueda, excluir) {
   var props = PropertiesService.getScriptProperties();
   if (!forzarBusqueda) {
     var guardado = props.getProperty('GEMINI_MODEL');
     if (guardado) return guardado;
   }
-  var m = descubrirModelo_(clave);
+  var m = descubrirModelo_(clave, excluir);
   props.setProperty('GEMINI_MODEL', m);
   return m;
+}
+
+/**
+ * Cuando Google retira un modelo, su error suele decir cuál usar en su lugar:
+ * "Please update your code to use models/gemini-3.6-flash". Si viene, se toma
+ * esa sugerencia antes que adivinar.
+ */
+function modeloSugerido_(textoError) {
+  var m = /use\s+models\/([\w.\-]+)/i.exec(String(textoError || ''));
+  return m ? m[1] : '';
 }
 
 /**
@@ -129,6 +144,23 @@ function configurarGemini() {
  * Confirma que la clave quedó guardada, sin mostrarla.
  * Ejecútala después de configurarGemini() y mira el registro de ejecución.
  */
+/**
+ * Genera el resumen del mes en curso y lo muestra en el registro.
+ * Sirve para comprobar que Gemini responde sin tener que abrir la app.
+ */
+function probarResumen() {
+  var hoy = new Date();
+  var mes = hoy.getFullYear() + '-' + ('0' + (hoy.getMonth() + 1)).slice(-2);
+  try {
+    var r = construirResumenIA_(mes, '', '');
+    Logger.log('FUNCIONA. Modelo usado: ' + r.modelo);
+    Logger.log('');
+    Logger.log(r.resumen);
+  } catch (err) {
+    Logger.log('FALLA: ' + err.message);
+  }
+}
+
 function verificarGemini() {
   var k = PropertiesService.getScriptProperties().getProperty('GEMINI_KEY');
   if (!k) {
@@ -320,11 +352,23 @@ function construirResumenIA_(mes, fono, mesAnterior) {
   var modelo = modeloGemini_(clave, false);
   var respuesta = pedir(modelo);
 
-  // Google retira modelos sin avisar. Si el guardado ya no existe, se busca otro
-  // y se reintenta una vez, para que el resumen no se caiga por un cambio ajeno.
+  // Google retira modelos sin avisar. Si el guardado ya no sirve, primero se
+  // prueba el que sugiere el propio error; si no sugiere ninguno, se busca otro
+  // distinto del que falló. Así el resumen no se cae por un cambio ajeno.
   if (respuesta.getResponseCode() === 404) {
-    modelo = modeloGemini_(clave, true);
-    respuesta = pedir(modelo);
+    var fallido = modelo;
+    var sugerido = modeloSugerido_(respuesta.getContentText());
+    var props = PropertiesService.getScriptProperties();
+
+    if (sugerido && sugerido !== fallido) {
+      modelo = sugerido;
+      respuesta = pedir(modelo);
+      if (respuesta.getResponseCode() === 200) props.setProperty('GEMINI_MODEL', modelo);
+    }
+    if (respuesta.getResponseCode() === 404) {
+      modelo = modeloGemini_(clave, true, fallido);
+      respuesta = pedir(modelo);
+    }
   }
 
   var codigo = respuesta.getResponseCode();

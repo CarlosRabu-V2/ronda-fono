@@ -1,7 +1,7 @@
 /* Service worker: guarda el armazón de la app para que abra sin conexión.
    Los datos NO pasan por aquí: viven en IndexedDB. */
 
-const CACHE = 'ronda-fono-v8';
+const CACHE = 'ronda-fono-v9';
 const ARCHIVOS = ['./', 'index.html', 'styles.css', 'app.js', 'pantallas.js', 'dashboard.js', 'informes.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

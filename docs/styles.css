@@ -633,3 +633,8 @@ main { padding: 0 var(--margin) 148px; }
 
 @keyframes girar { to { transform: rotate(360deg); } }
 .icon-btn.girando svg { animation: girar 1s linear infinite; }
+
+/* El título no cede espacio: sin esto, con varios botones a la derecha,
+   "Ronda" terminaba partido letra por letra en vertical. */
+.barra-titulo { flex-shrink: 0; }
+.barra-titulo h1 { white-space: nowrap; }

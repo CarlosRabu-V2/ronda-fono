@@ -62,9 +62,13 @@ function mostrarConfiguracion() {
   c.classList.remove('oculto');
 
   const cfg = estado.config || {};
+  const yaConfigurada = !!(cfg.url && cfg.token);
+
   c.innerHTML = `<div class="centrado">
-      <h1>Configurar la app</h1>
-      <p>Se hace una sola vez. Los datos quedan en este teléfono y no viajan a ninguna parte.</p>
+      <h1>${yaConfigurada ? 'Configuración' : 'Configurar la app'}</h1>
+      <p>${yaConfigurada
+        ? 'Si cambiaste la implementación en Apps Script, pega aquí la dirección nueva.'
+        : 'Se hace una sola vez. Los datos quedan en este teléfono y no viajan a ninguna parte.'}</p>
 
       <div class="seccion">
         <div class="campo">
@@ -83,19 +87,35 @@ function mostrarConfiguracion() {
         <div class="seccion">
           <div class="campo">
             <label for="cfgFono">Tu nombre en la planilla</label>
-            <select id="cfgFono"></select>
+            <select id="cfgFono">${cfg.fono
+              ? `<option value="${esc(cfg.fono)}" selected>${esc(cfg.fono)}</option>` : ''}</select>
             <div class="ayuda">La ronda mostrará solo tus pacientes.</div>
           </div>
         </div>
       </div>
 
+      <div class="seccion">
+        <button class="btn-bloque" id="cfgTema" type="button">
+          ${ICO.luna} <span id="cfgTemaTxt">${
+            temaEfectivo() === 'oscuro' ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro'}</span>
+        </button>
+      </div>
+
       <div class="acciones">
+        ${yaConfigurada ? '<button class="btn btn-secundario" id="btnCancelarCfg">Cancelar</button>' : ''}
         <button class="btn btn-primario" id="btnProbar">Conectar</button>
       </div>
       <div id="cfgAviso"></div>
     </div>`;
 
   $('#btnProbar').addEventListener('click', probarConexion);
+  $('#cfgTema').addEventListener('click', async () => {
+    await alternarTema();
+    $('#cfgTemaTxt').textContent = temaEfectivo() === 'oscuro'
+      ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro';
+  });
+  const cancelar = $('#btnCancelarCfg');
+  if (cancelar) cancelar.addEventListener('click', () => { mostrarApp(); pintar(); });
 }
 
 async function probarConexion() {
@@ -127,12 +147,14 @@ async function probarConexion() {
     if (!r.ok) throw new Error(r.error || 'Respuesta inesperada.');
 
     // Con la conexión probada, se piden los nombres para elegir el tuyo.
+    // Se recuerda el anterior para no obligar a elegirlo de nuevo.
+    const fonoAnterior = (estado.config && estado.config.fono) || '';
     estado.config = { url, token, fono: '' };
     const censo = await API.censo();
     const fonos = (censo.catalogos && censo.catalogos.fonoaudiólogos) || [];
 
     $('#cfgPaso2').classList.remove('oculto');
-    $('#cfgFono').innerHTML = selectOpciones(fonos, (estado.config || {}).fono);
+    $('#cfgFono').innerHTML = selectOpciones(fonos, fonoAnterior);
     aviso.innerHTML = `<div class="banda ok">Conectado a la hoja <strong>${esc(r.hoja)}</strong>. Elige tu nombre y guarda.</div>`;
 
     btn.textContent = 'Guardar y empezar';
@@ -147,7 +169,17 @@ async function probarConexion() {
     };
 
   } catch (err) {
-    aviso.innerHTML = `<div class="banda warn">No se pudo conectar: ${esc(err.message)}</div>`;
+    // "Failed to fetch" no dice nada útil. Casi siempre es que la dirección ya
+    // no existe: Google responde con una página de error sin cabeceras de
+    // permiso y el navegador lo informa como si fuera un problema de CORS.
+    const deRed = err instanceof TypeError || /fetch/i.test(err.message);
+    aviso.innerHTML = deRed
+      ? `<div class="banda warn"><strong>No hubo respuesta de esa dirección.</strong>
+           <span class="meta">Lo más probable es que la implementación haya cambiado.
+           En Apps Script: Implementar → Gestionar implementaciones, y copia la URL de la
+           que esté <em>activa</em>. Si solo quieres actualizar el código, usa el lápiz
+           y "Nueva versión": así la dirección no cambia.</span></div>`
+      : `<div class="banda warn">No se pudo conectar: ${esc(err.message)}</div>`;
     btn.textContent = 'Conectar';
     btn.disabled = false;
   }
@@ -180,16 +212,26 @@ function conectarArmazon() {
 
   $('#pillSync').addEventListener('click', () => Sync.intentar({ silencioso: false }));
   $('#btnRefrescar').addEventListener('click', () => refrescarCenso());
-  $('#btnTema').addEventListener('click', alternarTema);
+  $('#btnAjustes').addEventListener('click', mostrarConfiguracion);
   $('#fab').addEventListener('click', () => pantallaIngreso());
   $('#bloqueEgresos').addEventListener('click', alternarEgresos);
 
   $$('.nav button').forEach(b => b.addEventListener('click', () => irA(b.dataset.vista)));
 }
 
+/**
+ * El tema que se ve de verdad. Sin elección manual, manda el del sistema; mirar
+ * solo el atributo hacía que el primer toque no cambiara nada en un teléfono
+ * que ya estaba en modo oscuro.
+ */
+function temaEfectivo() {
+  const elegido = document.documentElement.dataset.tema;
+  if (elegido === 'oscuro' || elegido === 'claro') return elegido;
+  return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'oscuro' : 'claro';
+}
+
 async function alternarTema() {
-  const actual = document.documentElement.dataset.tema;
-  const nuevo = actual === 'oscuro' ? 'claro' : 'oscuro';
+  const nuevo = temaEfectivo() === 'oscuro' ? 'claro' : 'oscuro';
   document.documentElement.dataset.tema = nuevo;
   await DB.guardar('config', nuevo, 'tema');
 }

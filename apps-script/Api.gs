@@ -115,9 +115,11 @@ function apiGet_(e) {
   try {
     verificarToken_(e.parameter.token);
     if (e.parameter.api === 'censo') {
-      return json_(construirCenso_(e.parameter.fono, e.parameter.dias));
+      return json_(construirCenso_(e.parameter.fono, e.parameter.dias, e.parameter.servicios));
     }
-    if (e.parameter.api === 'ping')  return json_({ ok: true, hoja: HOJA_DATOS });
+    // Con los catálogos: la configuración de la app los necesita para elegir el
+    // nombre, y sin ellos tenía que descargar la ronda de todo el hospital.
+    if (e.parameter.api === 'ping')  return json_({ ok: true, hoja: HOJA_DATOS, catalogos: getOpcionesFormulario() });
     if (e.parameter.api === 'dashboard') {
       var d = construirDashboard_(e.parameter.mes, e.parameter.fono);
       d.validacion = calcularValidacion_(d);
@@ -136,21 +138,6 @@ function apiGet_(e) {
 }
 
 /**
- * El censo son los episodios abiertos: último registro de cada RUT que no tenga
- * marca de egreso y cuya última sesión sea reciente.
- *
- * El corte por antigüedad es necesario: buena parte de los episodios no recibe
- * una fila de egreso, porque el paciente simplemente deja de aparecer cuando se
- * va. Sin corte, la ronda acumularía pacientes que ya no están. El plazo sale de
- * medir cada cuánto se repiten las sesiones de un mismo paciente.
- */
-/**
- * @param {string|number} [diasPedidos] Amplía la ventana por esta vez. Sirve
- *   cuando pasaron varios días sin registrar y hay pacientes que siguen
- *   hospitalizados: sin esto habría que reescribirlos uno por uno.
- *   Se limita a 120 días; más allá son episodios cerrados con seguridad.
- */
-/**
  * Días completos entre dos fechas, contando por día calendario y no por horas.
  * En UTC a propósito: con el cambio de hora de septiembre, 16 días de
  * diferencia dan 15 días y 23 horas, y eso dejaba fuera de la ronda a un
@@ -162,17 +149,49 @@ function diasEntre_(desde, hasta) {
   return Math.round((b - a) / 86400000);
 }
 
-function construirCenso_(fono, diasPedidos) {
+/**
+ * El censo son los episodios abiertos: el último registro de cada RUT, que no
+ * tenga marca de egreso y que sea reciente.
+ *
+ * El corte por antigüedad es necesario: buena parte de los episodios no recibe
+ * una fila de egreso, porque el paciente simplemente deja de aparecer cuando se
+ * va. Sin corte, la ronda acumularía pacientes que ya no están. El plazo sale de
+ * medir cada cuánto se repiten las sesiones de un mismo paciente.
+ *
+ * Entra a la ronda quien esta profesional atendió dentro del plazo, y además
+ * todo paciente activo de los servicios que cubre. Antes solo se miraban sus
+ * propias filas: los pacientes de UTI, registrados por otra colega, nunca
+ * aparecían los días que le tocaba ir a UTI.
+ *
+ * Dónde está el paciente y si egresó lo dice su última fila, sea de quien sea:
+ * si una colega le dio el alta, el episodio está cerrado aunque la última
+ * atención de esta profesional no lo diga.
+ *
+ * @param {string|number} [diasPedidos] Amplía la ventana por esta vez. Sirve
+ *   cuando pasaron varios días sin registrar y hay pacientes que siguen
+ *   hospitalizados: sin esto habría que reescribirlos uno por uno.
+ *   Se limita a 120 días; más allá son episodios cerrados con seguridad.
+ * @param {string} [serviciosCubiertos] Servicios separados por coma, por
+ *   ejemplo "UTI,UCI".
+ */
+function construirCenso_(fono, diasPedidos, serviciosCubiertos) {
   var dias = parseInt(diasPedidos, 10);
   if (isNaN(dias) || dias < 1) dias = DIAS_CENSO;
   dias = Math.min(dias, 120);
+
+  var cubre = {};
+  String(serviciosCubiertos || '').split(',').forEach(function (s) {
+    var n = normalizarTexto_(s);
+    if (n) cubre[n] = true;
+  });
+  var fonoBuscado = String(fono || '').trim();
 
   var datos = leerDatosBusqueda_();
   var hoy = new Date();
   var anioActual = hoy.getFullYear();
 
   var MESES = { ENERO:0, FEBRERO:1, MARZO:2, ABRIL:3, MAYO:4, JUNIO:5, JULIO:6,
-                AGOSTO:7, SEPTIEMBRE:8, OCTUBRE:9, NOVIEMBRE:10, DICIEMBRE:11 };
+                AGOSTO:7, SEPTIEMBRE:8, SETIEMBRE:8, OCTUBRE:9, NOVIEMBRE:10, DICIEMBRE:11 };
 
   function fechaDeFila(fila) {
     var mes = MESES[normalizarTexto_(fila[COL.MES])];
@@ -185,21 +204,25 @@ function construirCenso_(fono, diasPedidos) {
     return f;
   }
 
-  var porRut = {};
+  var ultima = {};    // última fila de cada RUT, de cualquier profesional
+  var propia = {};    // última fila de cada RUT escrita por esta profesional
   var conteo = {};
+  var filasPropias = 0, masReciente = null;
 
   for (var i = 0; i < datos.length; i++) {
     var fila = datos[i];
     var rut = normalizarRut_(fila[COL.RUT]);
     if (!rut) continue;
-    if (fono && String(fila[COL.FONO]).trim() !== String(fono).trim()) continue;
 
+    var reg = { fila: fila, fecha: fechaDeFila(fila), indice: i };
     conteo[rut] = (conteo[rut] || 0) + 1;
+    if (esMasReciente_(reg, ultima[rut])) ultima[rut] = reg;
 
-    var f = fechaDeFila(fila);
-    if (!porRut[rut] || !porRut[rut].fecha || (f && f >= porRut[rut].fecha)) {
-      porRut[rut] = { fila: fila, fecha: f, indice: i };
-    }
+    // Sin nombre se toman todas las filas, como antes.
+    if (fonoBuscado && String(fila[COL.FONO]).trim() !== fonoBuscado) continue;
+    filasPropias++;
+    if (esMasReciente_(reg, propia[rut])) propia[rut] = reg;
+    if (reg.fecha && (!masReciente || reg.fecha > masReciente)) masReciente = reg.fecha;
   }
 
   // Qué fila escribió cada sesión de la app, para poder deshacer un egreso.
@@ -212,29 +235,72 @@ function construirCenso_(fono, diasPedidos) {
   }
 
   var activos = [], egresosRecientes = [];
+  var tz = Session.getScriptTimeZone();
+  var iso = function (d) { return d ? Utilities.formatDate(d, tz, 'yyyy-MM-dd') : ''; };
 
-  Object.keys(porRut).forEach(function (rut) {
-    var reg = porRut[rut];
-    var diasSin = reg.fecha ? diasEntre_(reg.fecha, hoy) : 9999;
-
-    var egresado = COLS_EGRESO.some(function (c) { return Number(reg.fila[c]) === 1; });
+  function paciente(reg, mia, diasSin, n) {
     var p = filaAPaciente_(reg.fila);
     p.cama            = String(reg.fila[COL.CAMA] || '');
     p.categorizacion  = String(reg.fila[COL.CATEGORIZA] || '');
-    p.fono            = String(reg.fila[COL.FONO] || '');
-    p.ultimaFecha     = reg.fecha ? Utilities.formatDate(reg.fecha, Session.getScriptTimeZone(), 'yyyy-MM-dd') : '';
+    p.fono            = String(reg.fila[COL.FONO] || '');      // quién lo atendió por última vez
+    p.ultimaFecha     = iso(reg.fecha);                        // última atención de cualquiera
+    p.ultimaFechaMia  = mia ? iso(mia.fecha) : '';             // la de esta profesional
     p.diasSinAtencion = diasSin;
-    p.atencionesPrevias = conteo[rut];
+    p.atencionesPrevias = n;
+    return p;
+  }
 
-    if (egresado) {
-      if (diasSin <= DIAS_EGRESO) {
-        p.motivoEgreso = motivoEgreso_(reg.fila);
-        // Sin el uuid, la app no puede deshacer el egreso después de recargar
-        // el censo. leerDatosBusqueda_ parte en la fila 2 de la hoja.
-        p.uuidEgreso = uuidPorFila[reg.indice + 2] || '';
-        egresosRecientes.push(p);
+  function comoEgreso(p, reg) {
+    p.motivoEgreso = motivoEgreso_(reg.fila);
+    // Sin el uuid, la app no puede deshacer el egreso después de recargar
+    // el censo. leerDatosBusqueda_ parte en la fila 2 de la hoja.
+    p.uuidEgreso = uuidPorFila[reg.indice + 2] || '';
+    return p;
+  }
+
+  Object.keys(ultima).forEach(function (rut) {
+    var reg = ultima[rut];
+    var mia = propia[rut];
+    var diasSin = reg.fecha ? diasEntre_(reg.fecha, hoy) : 9999;
+    var diasMia = (mia && mia.fecha) ? diasEntre_(mia.fecha, hoy) : 9999;
+
+    // Qué cierra el episodio depende de quién escribió la fila. Una salida
+    // marcada por ella, incluidos el traslado a otro servicio y las
+    // derivaciones, dice que el paciente dejó SU cuidado: así lo marca la app al
+    // tocar "Marcar salida", y así se usa en la planilla (tras un traslado, el
+    // paciente casi siempre sigue con otra colega). La marca de una colega solo
+    // lo cierra si el paciente dejó el hospital: un traslado de UTI a MQ no lo
+    // saca de la ronda de MQ.
+    //
+    // Si ella le dio la salida y después lo registró otra colega (un control
+    // ambulatorio, un reingreso), eso es otro episodio: no vuelve a su ronda,
+    // salvo que esté en un servicio que ella cubre.
+    var cerradoPorElla = !!mia && mia !== reg && esSalida_(mia.fila);
+    var suyo = diasMia <= dias && !cerradoPorElla;
+    var enCubierto = diasSin <= dias && cubre[normalizarTexto_(reg.fila[COL.SERVICIO])] === true;
+
+    if (!suyo && !enCubierto) {
+      // Su salida reciente se sigue mostrando, para poder deshacerla.
+      if (cerradoPorElla && diasMia <= DIAS_EGRESO) {
+        egresosRecientes.push(comoEgreso(paciente(mia, mia, diasMia, conteo[rut]), mia));
       }
-    } else if (diasSin <= dias) {
+      return;
+    }
+
+    var p = paciente(reg, mia, diasSin, conteo[rut]);
+    // "Cubierto" dice dónde está, no quién lo atendió: un paciente de UTI que
+    // ella vio el martes sigue siendo de UTI el miércoles, y no debe contar como
+    // pendiente de su ronda los días que no va.
+    if (enCubierto) p.cubierto = true;
+
+    // En un servicio que solo cubre, cualquier salida significa que el paciente
+    // ya no está en ese servicio.
+    var cerrado = (!suyo || reg === mia) ? esSalida_(reg.fila) : esEgreso_(reg.fila);
+    if (cerrado) {
+      // Egresos recientes sirve para deshacer: solo entran las salidas que
+      // marcó ella. La de una colega no se puede deshacer desde la app.
+      if (reg === mia && diasSin <= DIAS_EGRESO) egresosRecientes.push(comoEgreso(p, reg));
+    } else {
       activos.push(p);
     }
   });
@@ -248,30 +314,42 @@ function construirCenso_(fono, diasPedidos) {
   // Cuando la ronda sale vacía hay que poder decir por qué. Sin esto, la
   // pantalla queda en blanco y no se distingue "no hay nadie hospitalizado"
   // de "la app no está leyendo la planilla".
-  var masReciente = null, totalFilas = 0;
-  Object.keys(porRut).forEach(function (r) {
-    totalFilas += conteo[r];
-    var f = porRut[r].fecha;
-    if (f && (!masReciente || f > masReciente)) masReciente = f;
-  });
-
   return {
     ok: true,
-    generado: Utilities.formatDate(hoy, Session.getScriptTimeZone(), "yyyy-MM-dd'T'HH:mm:ss"),
+    generado: Utilities.formatDate(hoy, tz, "yyyy-MM-dd'T'HH:mm:ss"),
     diasCenso: dias,
     diasPorDefecto: DIAS_CENSO,
     pacientes: activos,
     egresos: egresosRecientes,
     diagnostico: {
       filasLeidas: datos.length,
-      filasDelProfesional: totalFilas,
-      personasDistintas: Object.keys(porRut).length,
-      registroMasReciente: masReciente
-        ? Utilities.formatDate(masReciente, Session.getScriptTimeZone(), 'yyyy-MM-dd') : '',
+      filasDelProfesional: filasPropias,
+      personasDistintas: Object.keys(propia).length,
+      registroMasReciente: iso(masReciente),
       hoja: HOJA_DATOS
     },
     catalogos: getOpcionesFormulario()
   };
+}
+
+/**
+ * Si la fila nueva es más reciente que la guardada para el mismo paciente.
+ * Una fila sin fecha legible no desplaza a una fechada; en el mismo día gana la
+ * de más abajo, que es la última que se escribió.
+ */
+function esMasReciente_(nueva, actual) {
+  if (!actual || !actual.fecha) return true;
+  return !!(nueva.fecha && nueva.fecha >= actual.fecha);
+}
+
+/** La fila marca que el paciente dejó el hospital (alta, abandono, fallecimiento, otro hospital). */
+function esEgreso_(fila) {
+  return COLS_EGRESO.some(function (c) { return Number(fila[c]) === 1; });
+}
+
+/** Cualquiera de las siete salidas del REM, incluidos el traslado y las derivaciones. */
+function esSalida_(fila) {
+  return COLS_EGRESO_REM.some(function (c) { return Number(fila[c]) === 1; });
 }
 
 function motivoEgreso_(fila) {
@@ -279,6 +357,9 @@ function motivoEgreso_(fila) {
   if (Number(fila[COL.FALLECIMIENTO]) === 1) return 'Fallecimiento';
   if (Number(fila[COL.OTRO_HOSP]) === 1)     return 'Otro hospital';
   if (Number(fila[COL.ABANDONO]) === 1)      return 'Abandono';
+  if (Number(fila[COL.OTRO_SERV]) === 1)     return 'Otro servicio';
+  if (Number(fila[COL.NIVEL_PRIM]) === 1)    return 'Nivel primario';
+  if (Number(fila[COL.ACV_APS]) === 1)       return 'ACV referido a APS';
   return 'Egreso';
 }
 
@@ -399,7 +480,9 @@ function anularEgreso_(uuid) {
     var ancho = COL.NIVEL_PRIM - COL.INGRESO + 1;
     var actual = hoja.getRange(fila, desde, 1, ancho).getValues()[0];
 
-    var eraEgreso = COLS_EGRESO.some(function (c) {
+    // Las siete salidas, no solo las que dejan el hospital: la app también
+    // registra traslados y derivaciones, y esos se tienen que poder deshacer.
+    var eraEgreso = COLS_EGRESO_REM.some(function (c) {
       return Number(actual[c - COL.INGRESO]) === 1;
     });
     if (!eraEgreso) throw new Error('Esa fila no tiene marca de egreso.');

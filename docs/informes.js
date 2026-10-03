@@ -11,14 +11,12 @@ const inf = {
   mes: null,
   datos: null,      // dashboard del mes
   cuando: 0,
-  refrescando: false,
-  aviso: null,
+  error: null,
+  enviando: false,
   nomina: null,     // se pide solo al generar el PDF; nunca se guarda
   resumen: '',
   incluirResumen: true,
   generando: false,
-  cargando: false,
-  error: null,
   secciones: { rem28: true, rem17: true, produccion: true, nomina: true }
 };
 
@@ -29,115 +27,138 @@ const SECCIONES = [
   ['nomina',     'Nómina de pacientes', 'Pacientes atendidos en el período']
 ];
 
-API.nomina = async function (mes, fono) {
+API.nomina = function (mes, fono) {
   const { url, token } = estado.config;
-  const r = await fetch(`${url}?api=nomina&token=${encodeURIComponent(token)}` +
-                        `&mes=${encodeURIComponent(mes)}&fono=${encodeURIComponent(fono || '')}`,
-                        { redirect: 'follow' });
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.error || 'No se pudo obtener la nómina.');
-  return j;
+  return pedirJSON(`${url}?api=nomina&token=${encodeURIComponent(token)}` +
+                   `&mes=${encodeURIComponent(mes)}&fono=${encodeURIComponent(fono || '')}`,
+                   { method: 'GET' });
 };
 
-API.resumen = async function (mes, fono, anterior) {
+API.resumen = function (mes, fono, anterior) {
   const { url, token } = estado.config;
-  const r = await fetch(`${url}?api=resumen&token=${encodeURIComponent(token)}` +
-                        `&mes=${encodeURIComponent(mes)}&fono=${encodeURIComponent(fono || '')}` +
-                        `&anterior=${encodeURIComponent(anterior || '')}`,
-                        { redirect: 'follow' });
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.error || 'No se pudo generar el resumen.');
-  return j;
+  // Un solo intento: reintentar llamaría dos veces a Gemini por un mismo resumen.
+  return pedirJSON(`${url}?api=resumen&token=${encodeURIComponent(token)}` +
+                   `&mes=${encodeURIComponent(mes)}&fono=${encodeURIComponent(fono || '')}` +
+                   `&anterior=${encodeURIComponent(anterior || '')}`,
+                   { method: 'GET' }, { intentos: 1, espera: 90000 });
 };
 
 /* ── Entrada ──────────────────────────────────────────────── */
 
-async function abrirInformes() {
+/** Igual que el dashboard: la cabecera con el selector de mes se arma una vez por visita. */
+function abrirInformes() {
   if (!inf.mes) inf.mes = mesActual();
-
-  // Comparte caché con el dashboard: son el mismo cálculo.
-  const c = cache.leer(`dash:${inf.mes}:${estado.config.fono || ''}`);
-  inf.datos  = c ? c.datos  : null;
-  inf.cuando = c ? c.cuando : 0;
-  inf.error  = null;
-  inf.aviso  = null;
-  pintarInformes();
-
-  if (!c || Date.now() - c.cuando > FRESCO_MS) await cargarInformes(!!c);
-}
-
-async function cargarInformes(enSegundoPlano) {
-  if (!navigator.onLine) {
-    if (inf.datos) inf.aviso = 'Sin conexión · datos de ' + hace(inf.cuando);
-    else inf.error = 'Sin conexión. Los informes se arman con los datos de la planilla.';
-    pintarInformes();
-    return;
-  }
-
-  inf.cargando = !enSegundoPlano;
-  inf.refrescando = !!enSegundoPlano;
-  inf.error = null;
-  inf.aviso = null;
-  pintarInformes();
-
-  try {
-    const d = await API.dashboard(inf.mes, estado.config.fono);
-    inf.datos = d;
-    inf.cuando = Date.now();
-    cache.escribir(`dash:${inf.mes}:${estado.config.fono || ''}`, d);
-  } catch (err) {
-    if (inf.datos) inf.aviso = 'No se pudo actualizar · datos de ' + hace(inf.cuando);
-    else inf.error = 'No se pudo cargar: ' + err.message;
-  }
-  inf.cargando = false;
-  inf.refrescando = false;
-  pintarInformes();
-}
-
-/* ── Pintado ──────────────────────────────────────────────── */
-
-function pintarInformes() {
   const cont = document.getElementById('informes');
-  const seleccionadas = SECCIONES.filter(([k]) => inf.secciones[k]).length;
 
-  const cabecera = `
+  cont.innerHTML = `
     <div class="barra">
       <div class="barra-fila">
         <div class="barra-titulo">
           <div class="eyebrow">Fonoaudiología · hospitalario</div>
           <h1>Informes</h1>
         </div>
-        <button class="icon-btn ${inf.refrescando ? 'girando' : ''}" id="infRefrescar">${ICO.volver}</button>
+        <button class="icon-btn" id="infRefrescar" aria-label="Actualizar">${ICO.volver}</button>
       </div>
-      ${inf.datos ? `<div class="frescura ${inf.aviso ? 'alerta' : ''}">${
-        esc(inf.aviso || (inf.refrescando ? 'Actualizando…' : 'Actualizado ' + hace(inf.cuando)))
-      }</div>` : ''}
+      <div class="frescura oculto" id="infFrescura"></div>
       <div class="filtros">
         <label class="filtro">${ICO.cal}
-          <select id="infMes">${mesesDisponibles().map(([v, t]) =>
+          <select id="infMes" aria-label="Mes">${mesesDisponibles().map(([v, t]) =>
             `<option value="${v}" ${v === inf.mes ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
         </label>
         <span class="filtro" style="flex:0 0 auto;padding:0 14px">${ICO.persona}
           <span style="font-size:13px">${esc(estado.config.fono || 'Todos')}</span>
         </span>
       </div>
-    </div>`;
+    </div>
+    <main style="padding-top:12px" id="infCuerpo"></main>`;
 
-  if (inf.error) {
-    cont.innerHTML = cabecera + `<main style="padding-top:12px">
-      <div class="vacio">${ICO.doc}<p>${esc(inf.error)}</p></div></main>`;
-    conectarInformes();
+  document.getElementById('infMes').addEventListener('change', (e) => {
+    inf.mes = e.target.value;
+    inf.resumen = '';
+    inf.nomina = null;
+    mostrarMesInformes();
+  });
+  document.getElementById('infRefrescar').addEventListener('click', actualizarInformes);
+
+  mostrarMesInformes();
+}
+
+/** Comparte lo guardado con el dashboard: son el mismo cálculo. */
+function mostrarMesInformes() {
+  const c = cacheDelMes(inf.mes);
+  inf.datos  = c ? c.datos  : null;
+  inf.cuando = c ? c.cuando : 0;
+  inf.error  = null;
+  pintarInformes();
+  if (!c) cargarInformes();
+}
+
+async function actualizarInformes() {
+  if (inf.enviando || Meses.cargando(inf.mes)) return;
+  if (estado.outbox.some(s => !s.error)) {
+    inf.enviando = true;
+    pintarInformes();
+    try { await Sync.enviar(); } catch (e) { /* sin red: la consulta lo dirá */ }
+    inf.enviando = false;
+  }
+  inf.nomina = null;   // la nómina también puede haber cambiado
+  cargarInformes();
+}
+
+async function cargarInformes() {
+  const mes = inf.mes;
+  const peticion = Meses.pedir(mes);
+  inf.error = null;
+  pintarInformes();
+  try {
+    const r = await peticion;
+    if (inf.mes !== mes) return;
+    inf.datos = r.datos;
+    inf.cuando = r.cuando;
+  } catch (err) {
+    if (inf.mes !== mes) return;
+    inf.error = err.message;
+  }
+  pintarInformes();
+}
+
+/* ── Pintado ──────────────────────────────────────────────── */
+
+function pintarInformes() {
+  const cuerpo = document.getElementById('infCuerpo');
+  if (!cuerpo) return;
+
+  const ocupado = inf.enviando || Meses.cargando(inf.mes);
+  const btn = document.getElementById('infRefrescar');
+  btn.classList.toggle('girando', ocupado);
+  btn.setAttribute('aria-busy', ocupado ? 'true' : 'false');
+
+  const fr = document.getElementById('infFrescura');
+  if (!inf.datos) {
+    fr.className = 'frescura oculto';
+  } else if (ocupado) {
+    fr.textContent = inf.enviando ? 'Enviando lo registrado…' : 'Actualizando…';
+    fr.className = 'frescura';
+  } else if (inf.error) {
+    fr.textContent = `No se pudo actualizar: ${inf.error} Cifras de ${fechaHora(inf.cuando)}.`;
+    fr.className = 'frescura alerta';
+  } else {
+    const f = frescuraMes(inf.mes, inf.cuando);
+    fr.textContent = f.texto;
+    fr.className = 'frescura' + (f.viejo ? ' alerta' : '');
+  }
+
+  if (!inf.datos) {
+    cuerpo.innerHTML = inf.error
+      ? `<div class="vacio">${ICO.doc}<p>No se pudo cargar ${esc(nombreMes(inf.mes))}: ${esc(inf.error)}</p>
+           <p class="meta">Los informes se arman con los datos de la planilla. Toca ↻ para intentarlo de nuevo.</p></div>`
+      : `<div class="cargando">Reuniendo los datos de ${esc(nombreMes(inf.mes))}…</div>`;
     return;
   }
-  if (inf.cargando || !inf.datos) {
-    cont.innerHTML = cabecera + `<main style="padding-top:12px">
-      <div class="cargando">Reuniendo los datos del mes…</div></main>`;
-    conectarInformes();
-    return;
-  }
 
-  cont.innerHTML = cabecera + `<main style="padding-top:12px">
+  const seleccionadas = SECCIONES.filter(([k]) => inf.secciones[k]).length;
 
+  cuerpo.innerHTML = `
     <div class="bloque-cab">
       <h2>Secciones del informe</h2>
       <span class="nota">${seleccionadas} de 4</span>
@@ -165,7 +186,8 @@ function pintarInformes() {
           ${ICO.escudo} Generado con datos sin identificar
         </div>
         <div style="display:flex;gap:8px;margin-top:12px">
-          <button class="btn btn-secundario" id="infRegenerar">${ICO.volver} Regenerar</button>
+          <button class="btn btn-secundario" id="infRegenerar" ${inf.generando ? 'disabled' : ''}>${
+            inf.generando ? 'Redactando…' : ICO.volver + ' Regenerar'}</button>
           <button class="btn ${inf.incluirResumen ? 'btn-primario' : 'btn-secundario'}" id="infIncluir">
             ${inf.incluirResumen ? ICO.check : ICO.circulo} ${inf.incluirResumen ? 'Incluido' : 'Excluido'}
           </button>
@@ -175,7 +197,8 @@ function pintarInformes() {
           Redacta el párrafo narrativo que acompaña al REM. A Gemini viajan solo cifras
           agregadas: nunca nombres, RUT ni camas.
         </p>
-        <button class="btn-bloque" id="infGenerar">${ICO.chispa} Generar resumen</button>`}
+        <button class="btn-bloque" id="infGenerar" ${inf.generando ? 'disabled' : ''}>${
+          inf.generando ? 'Redactando…' : ICO.chispa + ' Generar resumen'}</button>`}
       <div id="infAvisoIA"></div>
     </div>
 
@@ -187,20 +210,16 @@ function pintarInformes() {
 
     <p style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
       Se abre la ventana de impresión. Elige <strong>Guardar como PDF</strong> como destino.
-    </p>
-  </main>`;
+    </p>`;
 
   conectarInformes();
 }
 
 function conectarInformes() {
-  const sel = document.getElementById('infMes');
-  if (sel) sel.addEventListener('change', (e) => {
-    inf.mes = e.target.value; inf.resumen = ''; inf.nomina = null; abrirInformes();
-  });
-
-  const ref = document.getElementById('infRefrescar');
-  if (ref) ref.addEventListener('click', () => cargarInformes());
+  // El resumen se puede editar a mano: cada cambio queda en el estado, así
+  // repintar por cualquier otro motivo no lo devuelve al texto original.
+  const ta = document.getElementById('infResumen');
+  if (ta) ta.addEventListener('input', () => { inf.resumen = ta.value; });
 
   document.querySelectorAll('#informes [data-seccion]').forEach(b => {
     b.addEventListener('click', () => {
@@ -216,7 +235,6 @@ function conectarInformes() {
 
   const incl = document.getElementById('infIncluir');
   if (incl) incl.addEventListener('click', () => {
-    inf.resumen = document.getElementById('infResumen').value;
     inf.incluirResumen = !inf.incluirResumen;
     pintarInformes();
   });
@@ -226,24 +244,35 @@ function conectarInformes() {
 }
 
 async function generarResumen() {
-  const aviso = document.getElementById('infAvisoIA');
-  const btn = document.getElementById('infGenerar') || document.getElementById('infRegenerar');
-  if (btn) { btn.disabled = true; btn.textContent = 'Redactando…'; }
-  aviso.innerHTML = '';
+  if (inf.generando) return;
+  const mes = inf.mes;
+  inf.generando = true;
+  pintarInformes();
 
   // El mes anterior, para que el resumen pueda comparar.
-  const [a, m] = inf.mes.split('-').map(Number);
+  const [a, m] = mes.split('-').map(Number);
   const prev = m === 1 ? `${a - 1}-12` : `${a}-${String(m - 1).padStart(2, '0')}`;
 
+  let error = null;
   try {
-    const r = await API.resumen(inf.mes, estado.config.fono, prev);
-    inf.resumen = r.resumen;
-    inf.incluirResumen = true;
-    pintarInformes();
-    toast('Resumen generado. Revísalo antes de incluirlo.', 'ok');
+    const r = await API.resumen(mes, estado.config.fono, prev);
+    // Si mientras redactaba eligió otro mes, este resumen ya no corresponde.
+    if (inf.mes === mes) {
+      inf.resumen = r.resumen;
+      inf.incluirResumen = true;
+    }
   } catch (err) {
-    aviso.innerHTML = `<div class="banda warn" style="margin-top:12px">${esc(err.message)}</div>`;
-    if (btn) { btn.disabled = false; btn.innerHTML = ICO.chispa + ' Generar resumen'; }
+    error = err.message;
+  }
+  inf.generando = false;
+  // Se repinta igual si cambió de mes: el botón quedaría en "Redactando…".
+  pintarInformes();
+  if (inf.mes !== mes) return;
+  if (error) {
+    const aviso = document.getElementById('infAvisoIA');
+    if (aviso) aviso.innerHTML = `<div class="banda warn" style="margin-top:12px">${esc(error)}</div>`;
+  } else {
+    toast('Resumen generado. Revísalo antes de incluirlo.', 'ok');
   }
 }
 
@@ -255,6 +284,7 @@ async function descargarPdf() {
   if (document.getElementById('infResumen')) {
     inf.resumen = document.getElementById('infResumen').value;
   }
+  const mes = inf.mes;
 
   // La nómina lleva nombres y RUT, así que se pide en este momento y solo si
   // va incluida. No se guarda en el teléfono: vive lo que dura el PDF.
@@ -262,7 +292,9 @@ async function descargarPdf() {
     const btn = document.getElementById('infPdf');
     if (btn) { btn.disabled = true; btn.textContent = 'Reuniendo la nómina…'; }
     try {
-      inf.nomina = await API.nomina(inf.mes, estado.config.fono);
+      const n = await API.nomina(mes, estado.config.fono);
+      if (inf.mes !== mes) return;     // cambió de mes mientras esperaba
+      inf.nomina = n;
     } catch (err) {
       pintarInformes();
       toast('No se pudo obtener la nómina: ' + err.message, 'error');

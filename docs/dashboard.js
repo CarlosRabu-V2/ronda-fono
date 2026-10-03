@@ -11,14 +11,13 @@ const MESES_ES = ['enero','febrero','marzo','abril','mayo','junio','julio',
 const dash = {
   mes: null,
   datos: null,
-  cuando: 0,        // cuándo se calcularon los datos que se están viendo
-  cargando: false,
-  refrescando: false,
-  aviso: null,
-  abierta: null     // categoría del REM 28 con el desglose desplegado
+  cuando: 0,         // cuándo empezó el cálculo de las cifras que se están viendo
+  error: null,       // por qué no se pudo cargar o actualizar
+  enviando: false,   // enviando lo pendiente antes de recalcular
+  abierta: null      // categoría del REM 28 con el desglose desplegado
 };
 
-const claveDash = () => `dash:${dash.mes}:${estado.config.fono || ''}`;
+const claveDash = (mes) => `dash:${mes}:${estado.config.fono || ''}`;
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-CL');
 
@@ -84,108 +83,208 @@ function mesesDisponibles() {
   return lista;
 }
 
-API.dashboard = async function (mes, fono) {
+API.dashboard = function (mes, fono) {
   const { url, token } = estado.config;
-  const q = `${url}?api=dashboard&token=${encodeURIComponent(token)}` +
-            `&mes=${encodeURIComponent(mes)}&fono=${encodeURIComponent(fono || '')}`;
-  const r = await fetch(q, { method: 'GET', redirect: 'follow' });
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.error || 'El servidor rechazó la petición.');
-  return j;
+  return pedirJSON(`${url}?api=dashboard&token=${encodeURIComponent(token)}` +
+                   `&mes=${encodeURIComponent(mes)}&fono=${encodeURIComponent(fono || '')}`,
+                   { method: 'GET' });
 };
 
-/* ── Entrada ──────────────────────────────────────────────── */
+/**
+ * El cálculo del REM de un mes, compartido por el dashboard y los informes.
+ *
+ * Lo pedido se guarda con la clave del mes PEDIDO. Antes se guardaba con la del
+ * mes elegido al llegar la respuesta: si ella cambiaba de mes mientras cargaba,
+ * las cifras de septiembre quedaban guardadas (y a la vista) como si fueran de
+ * agosto. Con una petición en curso para el mismo mes, se reutiliza.
+ */
+const Meses = {
+  enCurso: {},
 
-async function abrirDashboard() {
-  if (!dash.mes) dash.mes = mesActual();
+  pedir(mes) {
+    const clave = claveDash(mes);
+    if (!this.enCurso[clave]) {
+      const inicio = Date.now();
+      this.enCurso[clave] = API.dashboard(mes, estado.config.fono)
+        .then(datos => {
+          if (datos.mes && datos.mes !== mes) throw new Error('La planilla respondió por otro mes.');
+          cache.escribir(clave, datos, inicio);
+          return { datos, cuando: inicio };
+        })
+        .finally(() => { delete this.enCurso[clave]; });
+    }
+    return this.enCurso[clave];
+  },
 
-  // Lo ya calculado se muestra de inmediato, sin esperar a la red.
-  const c = cache.leer(claveDash());
-  dash.datos  = c ? c.datos  : null;
-  dash.cuando = c ? c.cuando : 0;
-  dash.aviso  = null;
-  pintarDashboard();
+  cargando(mes) { return !!this.enCurso[claveDash(mes)]; }
+};
 
-  // Solo se vuelve a pedir si no hay nada guardado o si ya está viejo.
-  if (!c || Date.now() - c.cuando > FRESCO_MS) await cargarDashboard(!!c);
+/** "septiembre 2026" a partir de "2026-09". */
+function nombreMes(mes) {
+  const [a, m] = String(mes).split('-').map(Number);
+  return `${MESES_ES[m - 1] || ''} ${a || ''}`.trim();
 }
 
 /**
- * @param {boolean} enSegundoPlano Cuando ya hay datos en pantalla, se refresca
- *   por detrás: nada de tapar la vista con un "calculando" que la haga parpadear.
+ * Qué tan al día están las cifras guardadas de un mes. "Actualizado" se decía
+ * siempre, aunque después se hubieran registrado sesiones: ahora se compara la
+ * hora del cálculo con lo que sigue en el teléfono y con lo enviado más tarde.
  */
-async function cargarDashboard(enSegundoPlano) {
-  if (!navigator.onLine) {
-    if (dash.datos) { dash.aviso = 'Sin conexión · datos de ' + hace(dash.cuando); pintarDashboard(); }
-    else pintarDashboard('Sin conexión. El dashboard necesita red porque los cálculos ocurren en la planilla.');
-    return;
-  }
+function frescuraMes(mes, cuando) {
+  const delMes = estado.outbox.filter(s => String(s.fecha).slice(0, 7) === mes);
+  const sinEnviar = delMes.filter(s => !s.error).length;
+  const rechazados = delMes.length - sinEnviar;
+  const nuevos = ultimoCambio(mes) > cuando;
+  // Un cálculo hecho antes de que el mes terminara, y no hoy, puede no tener
+  // todo: lo registrado después en el formulario de escritorio o por colegas
+  // no deja rastro en este teléfono. Vale para el mes en curso y para uno ya
+  // cerrado que se calculó a medias.
+  const [a, m] = mes.split('-').map(Number);
+  const antesDelCierre = cuando < new Date(a, m, 1).getTime() && diasDesde(isoDe(cuando)) > 0;
 
-  dash.cargando = !enSegundoPlano;
-  dash.refrescando = !!enSegundoPlano;
-  dash.aviso = null;
-  pintarDashboard();
-
-  try {
-    const datos = await API.dashboard(dash.mes, estado.config.fono);
-    dash.datos = datos;
-    dash.cuando = Date.now();
-    cache.escribir(claveDash(), datos);
-  } catch (err) {
-    // Con datos viejos en pantalla vale más conservarlos que dejarla en blanco.
-    if (dash.datos) dash.aviso = 'No se pudo actualizar · datos de ' + hace(dash.cuando);
-    else { dash.cargando = false; dash.refrescando = false;
-           pintarDashboard('No se pudo cargar: ' + err.message); return; }
-  }
-  dash.cargando = false;
-  dash.refrescando = false;
-  pintarDashboard();
+  let texto = `Calculado ${fechaHora(cuando)}`;
+  if (sinEnviar) texto += ` · faltan ${sinEnviar} sin enviar`;
+  else if (nuevos) texto += ' · hay registros nuevos';
+  else if (antesDelCierre) texto += mes === mesActual() ? '' : ', antes de que terminara el mes';
+  const pedirRefresco = !!(sinEnviar || nuevos || antesDelCierre);
+  if (pedirRefresco) texto += ' · toca ↻';
+  // Los rechazados no se arreglan con ↻: se corrigen desde la bandeja de la ronda.
+  if (rechazados) texto += ` · ${rechazados} con error: corrígelos desde la Ronda`;
+  return { texto, viejo: pedirRefresco || rechazados > 0 };
 }
 
-/* ── Pintado ──────────────────────────────────────────────── */
+/** Lo guardado de un mes, si de verdad es de ese mes. */
+function cacheDelMes(mes) {
+  const c = cache.leer(claveDash(mes));
+  return (c && c.datos && c.datos.mes && c.datos.mes !== mes) ? null : c;
+}
 
-function pintarDashboard(mensaje) {
+/* ── Entrada ──────────────────────────────────────────────── */
+
+/**
+ * La cabecera se arma una vez por visita y no se vuelve a pintar mientras se
+ * mira: si el selector de mes se redibuja con la lista abierta (al terminar una
+ * carga), Android la cierra y la elección se pierde.
+ */
+function abrirDashboard() {
+  if (!dash.mes) dash.mes = mesActual();
   const cont = document.getElementById('dashboard');
 
-  const filtros = `
+  cont.innerHTML = `
     <div class="barra">
       <div class="barra-fila">
         <div class="barra-titulo">
           <div class="eyebrow">Estadísticas mensuales</div>
           <h1>Dashboard</h1>
         </div>
-        <button class="icon-btn ${dash.refrescando ? 'girando' : ''}" id="dashRefrescar">${ICO.volver}</button>
+        <button class="icon-btn" id="dashRefrescar" aria-label="Actualizar">${ICO.volver}</button>
       </div>
-      ${dash.datos ? `<div class="frescura ${dash.aviso ? 'alerta' : ''}">${
-        esc(dash.aviso || (dash.refrescando ? 'Actualizando…' : 'Actualizado ' + hace(dash.cuando)))
-      }</div>` : ''}
+      <div class="frescura oculto" id="dashFrescura"></div>
       <div class="filtros">
         <label class="filtro">${ICO.cal}
-          <select id="dashMes">${mesesDisponibles().map(([v, t]) =>
+          <select id="dashMes" aria-label="Mes">${mesesDisponibles().map(([v, t]) =>
             `<option value="${v}" ${v === dash.mes ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
         </label>
         <span class="filtro" style="flex:0 0 auto;padding:0 14px">${ICO.persona}
           <span style="font-size:13px">${esc(estado.config.fono || 'Todos')}</span>
         </span>
       </div>
-    </div>`;
+    </div>
+    <main style="padding-top:12px" id="dashCuerpo"></main>`;
 
-  if (mensaje) {
-    cont.innerHTML = filtros + `<main style="padding-top:12px"><div class="vacio">${ICO.grafico}<p>${esc(mensaje)}</p></div></main>`;
-    conectarFiltros();
-    return;
+  // Cambiar de mes pasa por lo guardado: si ese mes ya se calculó, aparece al instante.
+  document.getElementById('dashMes').addEventListener('change', (e) => {
+    dash.mes = e.target.value;
+    dash.abierta = null;
+    mostrarMesDashboard();
+  });
+  document.getElementById('dashRefrescar').addEventListener('click', actualizarDashboard);
+
+  mostrarMesDashboard();
+}
+
+/** Lo guardado del mes elegido. Solo se pide a la planilla si no hay nada: sin datos no hay qué mostrar. */
+function mostrarMesDashboard() {
+  const c = cacheDelMes(dash.mes);
+  dash.datos  = c ? c.datos  : null;
+  dash.cuando = c ? c.cuando : 0;
+  dash.error  = null;
+  pintarDashboard();
+  if (!c) cargarDashboard();
+}
+
+/** El botón ↻: primero envía lo registrado, después recalcula. Si no, el cálculo nuevo tampoco lo incluiría. */
+async function actualizarDashboard() {
+  if (dash.enviando || Meses.cargando(dash.mes)) return;
+  if (estado.outbox.some(s => !s.error)) {
+    dash.enviando = true;
+    pintarDashboard();
+    try { await Sync.enviar(); } catch (e) { /* sin red: la consulta lo dirá */ }
+    dash.enviando = false;
   }
-  if (dash.cargando || !dash.datos) {
-    cont.innerHTML = filtros + `<main style="padding-top:12px"><div class="cargando">Calculando el REM del mes…</div></main>`;
-    conectarFiltros();
+  cargarDashboard();
+}
+
+async function cargarDashboard() {
+  const mes = dash.mes;
+  const peticion = Meses.pedir(mes);
+  dash.error = null;
+  pintarDashboard();
+  try {
+    const r = await peticion;
+    if (dash.mes !== mes) return;      // ya eligió otro mes; lo pedido quedó guardado igual
+    dash.datos = r.datos;
+    dash.cuando = r.cuando;
+  } catch (err) {
+    if (dash.mes !== mes) return;
+    // Con datos en pantalla vale más conservarlos que dejarla en blanco.
+    dash.error = err.message;
+  }
+  pintarDashboard();
+}
+
+/* ── Pintado ──────────────────────────────────────────────── */
+
+function pintarDashboard() {
+  const cuerpo = document.getElementById('dashCuerpo');
+  if (!cuerpo) return;
+  const ocupado = dash.enviando || Meses.cargando(dash.mes);
+
+  const btn = document.getElementById('dashRefrescar');
+  btn.classList.toggle('girando', ocupado);
+  btn.setAttribute('aria-busy', ocupado ? 'true' : 'false');
+
+  const fr = document.getElementById('dashFrescura');
+  if (!dash.datos) {
+    fr.className = 'frescura oculto';
+  } else if (ocupado) {
+    fr.textContent = dash.enviando ? 'Enviando lo registrado…' : 'Actualizando…';
+    fr.className = 'frescura';
+  } else if (dash.error) {
+    fr.textContent = `No se pudo actualizar: ${dash.error} Cifras de ${fechaHora(dash.cuando)}.`;
+    fr.className = 'frescura alerta';
+  } else {
+    const f = frescuraMes(dash.mes, dash.cuando);
+    fr.textContent = f.texto;
+    fr.className = 'frescura' + (f.viejo ? ' alerta' : '');
+  }
+
+  if (!dash.datos) {
+    cuerpo.innerHTML = dash.error
+      ? `<div class="vacio">${ICO.grafico}<p>No se pudo cargar ${esc(nombreMes(dash.mes))}: ${esc(dash.error)}</p>
+           <p class="meta">El dashboard necesita red porque los cálculos ocurren en la planilla.
+           Toca ↻ para intentarlo de nuevo.</p></div>`
+      : `<div class="cargando">Calculando el REM de ${esc(nombreMes(dash.mes))}…</div>`;
     return;
   }
 
   const d = dash.datos;
   const r = d.resumen;
 
-  cont.innerHTML = filtros + `<main style="padding-top:12px">
-
+  cuerpo.innerHTML = `
+    <div class="bloque-cab" style="margin-top:4px">
+      <h2>Resumen de ${esc(nombreMes(dash.mes))}</h2>
+    </div>
     <div class="metricas">
       ${metrica('Ingresos', r.ingresos, ICO.entrada)}
       ${metrica('Egresos', r.egresos, ICO.salida)}
@@ -244,11 +343,14 @@ function pintarDashboard(mensaje) {
 
     <p style="font-size:12px;color:var(--text-muted);margin-top:20px;text-align:center">
       ${fmt(d.filas)} filas de ${esc(d.nombreMes.toLowerCase())} · ${fmt(r.pacientes)} pacientes distintos
-    </p>
-  </main>`;
+    </p>`;
 
-  conectarFiltros();
   conectarDesgloses();
+  // Repintar (al terminar una actualización) no cierra el desglose que estaba mirando.
+  if (dash.abierta) {
+    const fila = cuerpo.querySelector(`[data-cat="${CSS.escape(dash.abierta)}"]`);
+    if (fila) { dash.abierta = null; fila.click(); }
+  }
 }
 
 function metrica(etiqueta, valor, icono) {
@@ -360,14 +462,6 @@ function tarjetaValidacion(v) {
 }
 
 /* ── Interacción ──────────────────────────────────────────── */
-
-function conectarFiltros() {
-  const sel = document.getElementById('dashMes');
-  // Cambiar de mes pasa por el caché: si ese mes ya se calculó, aparece al instante.
-  if (sel) sel.addEventListener('change', (e) => { dash.mes = e.target.value; dash.abierta = null; abrirDashboard(); });
-  const btn = document.getElementById('dashRefrescar');
-  if (btn) btn.addEventListener('click', () => cargarDashboard());
-}
 
 /** Al tocar una categoría se abre su desglose por rango etario y sexo. */
 function conectarDesgloses() {

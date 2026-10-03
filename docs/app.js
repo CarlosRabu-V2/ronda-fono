@@ -129,14 +129,12 @@ const DB = (() => {
    CACHÉ DE CONSULTAS
    El dashboard y los informes se calculan en la planilla y tardan. Sin esto,
    cada cambio de vista rehace el mismo cálculo y la app parece congelada.
-   Se guarda lo ya calculado y se muestra al instante; si está viejo, se
-   refresca por detrás sin tapar la pantalla.
+   Se guarda lo ya calculado y se muestra al instante, con la hora en que se
+   calculó; solo se vuelve a pedir cuando ella toca actualizar.
 
    Solo guarda cifras agregadas. La nómina de pacientes NO se cachea: se pide
    en el momento de generar el PDF y se descarta al terminar.
    ══════════════════════════════════════════════════════════════ */
-
-const FRESCO_MS = 10 * 60 * 1000;   // pasados 10 minutos se considera viejo
 
 const cache = {
   leer(clave) {
@@ -147,9 +145,10 @@ const cache = {
       return (o && o.t && o.d) ? { datos: o.d, cuando: o.t } : null;
     } catch (e) { return null; }      // modo privado o dato corrupto
   },
-  escribir(clave, datos) {
+  /** @param {number} [t] Cuándo empezó el cálculo; lo que se envíe después ya no está incluido. */
+  escribir(clave, datos, t = Date.now()) {
     try {
-      localStorage.setItem('cache:' + clave, JSON.stringify({ d: datos, t: Date.now() }));
+      localStorage.setItem('cache:' + clave, JSON.stringify({ d: datos, t }));
     } catch (e) { /* sin cuota: la app funciona igual, solo sin caché */ }
   },
   limpiar() {
@@ -161,13 +160,27 @@ const cache = {
   }
 };
 
-/** "recién", "hace 5 min", "hace 2 h". */
-function hace(t) {
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
-  if (s < 60)    return 'recién';
-  if (s < 3600)  return `hace ${Math.round(s / 60)} min`;
-  if (s < 86400) return `hace ${Math.round(s / 3600)} h`;
-  return `hace ${Math.round(s / 86400)} d`;
+/**
+ * Cuándo se envió por última vez algo de un mes. Si es posterior a la hora en
+ * que se calculó el dashboard de ese mes, las cifras guardadas ya no incluyen
+ * todo y la pantalla tiene que decirlo en vez de mostrarlas como al día.
+ */
+function marcarCambio(mes) {
+  try { localStorage.setItem('cambio:' + mes, String(Date.now())); } catch (e) { /* sin almacenamiento */ }
+}
+function ultimoCambio(mes) {
+  try { return Number(localStorage.getItem('cambio:' + mes)) || 0; } catch (e) { return 0; }
+}
+
+/** "hoy 08:12", "ayer 17:40", "1 oct 17:40". Una hora fija no envejece mientras se mira la pantalla. */
+function fechaHora(t) {
+  const d = new Date(t);
+  const hora = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const dias = diasDesde(`${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`);
+  if (dias === 0) return `hoy ${hora}`;
+  if (dias === 1) return `ayer ${hora}`;
+  const meses = ['ene','feb','mar','abr','may','jun','jul','ago','sept','oct','nov','dic'];
+  return `${d.getDate()} ${meses[d.getMonth()]} ${hora}`;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -181,6 +194,9 @@ const estado = {
   diagnostico: null,   // por qué la ronda salió vacía, cuando sale vacía
   diasCenso: 14,
   diasPorDefecto: 14,
+  ventana: null,       // { desde, vence } mientras se mira una ventana más larga que la habitual
+  actualizado: 0,      // cuándo se trajo la ronda de la planilla por última vez
+  ocupado: '',         // lo que se está haciendo con la red, para mostrarlo en la píldora
   outbox: [],
   vista: 'ronda',
   busqueda: '',
@@ -201,14 +217,25 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
     }));
 
 const normRut = (r) => String(r || '').toUpperCase().replace(/[^0-9K]/g, '');
-const esc = (t) => { const d = document.createElement('div'); d.textContent = t ?? ''; return d.innerHTML; };
+/* Escapa también las comillas: el texto va a parar a atributos (data-rut,
+   data-grupo, value) y la ronda ahora muestra filas escritas por otras personas. */
+const esc = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+/**
+ * Fecha de la última atención de ESTA profesional. ultimaFecha es la de
+ * cualquier colega: si otra fonoaudióloga lo vio hoy, no significa que ella ya
+ * lo haya registrado. Un censo guardado por la versión anterior no trae
+ * ultimaFechaMia, y ahí ultimaFecha ya era la propia.
+ */
+const ultimaMia = (p) => ('ultimaFechaMia' in p) ? p.ultimaFechaMia : p.ultimaFecha;
 
 /** RUT ya registrados hoy, sea porque están en la bandeja o porque el censo los trae. */
 function registradosHoy() {
   const hoy = hoyISO();
   const set = new Set();
   estado.outbox.forEach(s => { if (s.fecha === hoy && s.tipo === 'sesion') set.add(normRut(s.rut)); });
-  estado.censo.forEach(p => { if (p.ultimaFecha === hoy) set.add(normRut(p.rut)); });
+  estado.censo.forEach(p => { if (ultimaMia(p) === hoy) set.add(normRut(p.rut)); });
   return set;
 }
 
@@ -222,152 +249,434 @@ function diasSugeridos(categorizacion) {
 }
 
 /* ══════════════════════════════════════════════════════════════
+   RED
+   Apps Script tarda varios segundos la primera vez (arranque en frío) y de
+   vez en cuando responde una página HTML de error en vez de datos. Sin tiempo
+   máximo, una petición colgada por mala señal dejaba el botón sin respuesta;
+   sin reintento, un error momentáneo obligaba a tocar varias veces.
+   ══════════════════════════════════════════════════════════════ */
+const ESPERA_MAX_MS = 40000;
+
+/** Errores que reintentar no arregla: la clave, la configuración o los datos. */
+const ERROR_DEFINITIVO = /clave|configurarToken|desconocida|inválid|no lo registró|no tiene marca|Falta/i;
+
+function falla(msg, { reintentable = false, red = false } = {}) {
+  const e = new Error(msg);
+  e.reintentable = reintentable;
+  e.red = red;
+  return e;
+}
+
+async function pedirUnaVez(url, opciones, espera) {
+  const ctrl = new AbortController();
+  const reloj = setTimeout(() => ctrl.abort(), espera);
+  try {
+    const r = await fetch(url, { ...opciones, redirect: 'follow', signal: ctrl.signal });
+    const texto = await r.text();
+    let j = null;
+    try { j = JSON.parse(texto); } catch (e) { /* no era JSON */ }
+    if (!j) {
+      // Google contesta con una página HTML cuando el script está saturado o
+      // falla al arrancar. Casi siempre pasa sola.
+      throw falla(`La planilla respondió con un error (${r.status}).`, { reintentable: true });
+    }
+    if (!j.ok) {
+      const msg = j.error || 'El servidor rechazó la petición.';
+      throw falla(msg, { reintentable: !ERROR_DEFINITIVO.test(msg) });
+    }
+    return j;
+  } catch (err) {
+    if ('reintentable' in err) throw err;
+    // fetch solo lanza por falta de red, por CORS o por el tiempo máximo.
+    throw falla(err.name === 'AbortError' ? 'La planilla tardó demasiado en responder.'
+              : navigator.onLine ? 'No hubo respuesta de la planilla.' : 'Sin conexión.',
+                { reintentable: true, red: true });
+  } finally {
+    clearTimeout(reloj);
+  }
+}
+
+/**
+ * Pide y devuelve el JSON de la API. Reintenta una vez los errores pasajeros;
+ * es seguro porque leer no cambia nada y cada sesión viaja con su uuid.
+ */
+async function pedirJSON(url, opciones = {}, { intentos = 2, espera = ESPERA_MAX_MS } = {}) {
+  let error = null;
+  for (let i = 0; i < intentos; i++) {
+    if (i) {
+      if (estado.ocupado) { estado.ocupado = 'Reintentando…'; pintarEstadoSync(); }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    try {
+      return await pedirUnaVez(url, opciones, espera);
+    } catch (err) {
+      error = err;
+      if (!err.reintentable || !navigator.onLine) break;
+    }
+  }
+  throw error;
+}
+
+/** POST con text/plain a propósito: application/json dispara una petición
+    previa OPTIONS que Apps Script no sabe responder. */
+const postJSON = (cuerpo) => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+  body: JSON.stringify(cuerpo)
+});
+
+/* ══════════════════════════════════════════════════════════════
    API
    ══════════════════════════════════════════════════════════════ */
 const API = {
-  async censo(dias) {
-    const { url, token, fono } = estado.config;
+  /** @param {object} [cfg] La configuración a usar; la pantalla de configuración prueba una que aún no se guardó. */
+  censo(dias, cfg = estado.config) {
+    const { url, token, fono, servicios } = cfg;
     const q = `${url}?api=censo&token=${encodeURIComponent(token)}&fono=${encodeURIComponent(fono || '')}` +
-              (dias ? `&dias=${encodeURIComponent(dias)}` : '');
-    const r = await fetch(q, { method: 'GET', redirect: 'follow' });
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || 'El servidor rechazó la petición.');
-    return j;
+              (dias ? `&dias=${encodeURIComponent(dias)}` : '') +
+              (servicios && servicios.length ? `&servicios=${encodeURIComponent(servicios.join(','))}` : '');
+    return pedirJSON(q, { method: 'GET' });
   },
 
-  async enviar(sesiones) {
+  enviar(sesiones, opciones) {
     const { url, token } = estado.config;
-    // text/plain a propósito: application/json dispara una petición previa
-    // OPTIONS que Apps Script no sabe responder.
-    const r = await fetch(url, {
-      method: 'POST',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ token, accion: 'sesiones', sesiones })
-    });
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || 'El servidor rechazó el envío.');
-    return j;
+    return pedirJSON(url, postJSON({ token, accion: 'sesiones', sesiones }), opciones);
   },
 
   /** Limpia las marcas de egreso de una fila ya escrita, ubicada por su uuid. */
   async anular(uuidEgreso) {
     const { url, token } = estado.config;
-    const r = await fetch(url, {
-      method: 'POST',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ token, accion: 'anular', uuid: uuidEgreso })
-    });
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || 'No se pudo anular.');
-    return j;
+    const pedir = () => pedirJSON(url, postJSON({ token, accion: 'anular', uuid: uuidEgreso }), { intentos: 1 });
+    try {
+      return await pedir();
+    } catch (err) {
+      if (!err.red || !navigator.onLine) throw err;
+      // El primer intento pudo llegar y perderse solo la respuesta. Si el
+      // reintento encuentra la fila ya limpia, el resultado es el que se pidió.
+      // Solo en el reintento: a la primera, ese mensaje es un error de verdad.
+      try {
+        return await pedir();
+      } catch (err2) {
+        if (/no tiene marca de egreso/i.test(err2.message)) return { ok: true };
+        throw err2;
+      }
+    }
   },
 
-  async ping(url, token) {
-    const r = await fetch(`${url}?api=ping&token=${encodeURIComponent(token)}`, { redirect: 'follow' });
-    return r.json();
+  ping(url, token) {
+    return pedirJSON(`${url}?api=ping&token=${encodeURIComponent(token)}`, { method: 'GET' });
   }
 };
 
 /* ══════════════════════════════════════════════════════════════
    SINCRONIZACIÓN
    Nada se borra del teléfono hasta que el servidor confirma el uuid.
+   Enviar NO cambia la lista de la ronda: antes, cada envío recargaba la ronda
+   por detrás y, si se estaba mirando una ventana ampliada, los pacientes aún
+   no atendidos desaparecían de golpe.
    ══════════════════════════════════════════════════════════════ */
 const Sync = {
-  enCurso: false,
+  enCurso: null,   // promesa del envío en marcha
+  // Confirmados hace poco: si una descarga de la ronda salió antes de que se
+  // escribieran, la planilla todavía no los trae y hay que seguir mostrándolos.
+  recientes: [],
 
-  async intentar({ silencioso = true } = {}) {
-    if (this.enCurso || !navigator.onLine) return;
-    const pendientes = estado.outbox.filter(s => !s.enviada);
-    if (!pendientes.length) {
-      if (!silencioso) toast('No hay nada pendiente.', 'info');
-      return;
-    }
+  /**
+   * Envía lo pendiente. Devuelve { enviadas, errores }; si no hay conexión
+   * lanza, y todo sigue guardado en el teléfono.
+   */
+  async enviar(opciones) {
+    // Con un envío en marcha se espera a que termine y después se manda lo que
+    // haya quedado: dos lotes a la vez solo competirían por el candado.
+    // Esperar y reclamar sin un await de por medio: si dos envíos esperan al
+    // mismo tiempo, solo uno sale y el otro vuelve a esperar.
+    do { await this.esperar(); } while (this.enCurso);
+    // Los que la planilla rechazó por datos no se reenvían solos: fallarían
+    // igual. Esperan a que se corrijan desde la bandeja.
+    const lote = estado.outbox.filter(s => !s.error);
+    if (!lote.length) return { enviadas: 0, errores: [] };
 
-    this.enCurso = true;
+    this.enCurso = this._enviar(lote, opciones);
     pintarEstadoSync();
-
     try {
-      const res = await API.enviar(pendientes.map(limpiarParaEnvio));
-
-      // Guardadas y duplicadas salen de la bandeja por igual: en ambos casos
-      // la fila ya está escrita en la planilla.
-      const confirmados = new Set([...(res.guardadas || []), ...(res.duplicadas || [])]);
-      for (const id of confirmados) {
-        await DB.borrar('outbox', id);
-      }
-      estado.outbox = estado.outbox.filter(s => !confirmados.has(s.uuid));
-
-      if (res.errores && res.errores.length) {
-        // Se quedan en la bandeja con el motivo a la vista, no se pierden.
-        for (const e of res.errores) {
-          const s = estado.outbox.find(x => x.uuid === e.uuid);
-          if (s) { s.error = e.msg; await DB.guardar('outbox', s); }
-        }
-        toast(`${confirmados.size} guardadas, ${res.errores.length} con error`, 'error');
-      } else if (!silencioso || confirmados.size) {
-        toast(`${confirmados.size} ${confirmados.size === 1 ? 'sesión sincronizada' : 'sesiones sincronizadas'}`, 'ok');
-      }
-
-      if (confirmados.size) await refrescarCenso({ silencioso: true });
-
-    } catch (err) {
-      if (!silencioso) toast('No se pudo sincronizar: ' + err.message, 'error');
+      return await this.enCurso;
     } finally {
-      this.enCurso = false;
-      pintar();
+      this.enCurso = null;
+      pintarEstadoSync();
     }
+  },
+
+  async _enviar(lote, opciones) {
+    // Desde aquí no se sabe si la planilla lo escribió hasta que responda: con
+    // mala señal puede escribirlo y perderse solo la respuesta. Deshacer o
+    // descartar un registro así exige confirmar primero (ver restaurarEgreso).
+    for (const s of lote) {
+      if (!s.intentado) { s.intentado = true; await DB.guardar('outbox', s); }
+    }
+    const res = await API.enviar(lote.map(limpiarParaEnvio), opciones);
+
+    // Guardadas y duplicadas salen de la bandeja por igual: en ambos casos
+    // la fila ya está escrita en la planilla.
+    const confirmados = new Set([...(res.guardadas || []), ...(res.duplicadas || [])]);
+    for (const id of confirmados) await DB.borrar('outbox', id);
+    const ahora = Date.now();
+    lote.filter(s => confirmados.has(s.uuid)).forEach(s => {
+      marcarCambio(String(s.fecha).slice(0, 7));
+      this.recientes.push({ uuid: s.uuid, rut: s.rut, tipo: s.tipo, en: ahora });
+    });
+    estado.outbox = estado.outbox.filter(s => !confirmados.has(s.uuid));
+
+    // Se quedan en la bandeja con el motivo a la vista, no se pierden. Un
+    // rechazo es seguro que no se escribió.
+    const errores = res.errores || [];
+    for (const e of errores) {
+      const s = estado.outbox.find(x => x.uuid === e.uuid);
+      if (s) { s.error = e.msg; delete s.intentado; await DB.guardar('outbox', s); }
+    }
+    return { enviadas: confirmados.size, errores };
+  },
+
+  /**
+   * Espera a que termine el envío en marcha, si lo hay. Quien después vaya a
+   * tocar la bandeja tiene que volver a mirar enCurso: otro envío en cola pudo
+   * arrancar justo entre medio (do { await Sync.esperar() } while (Sync.enCurso)).
+   */
+  async esperar() {
+    while (this.enCurso) {
+      try { await this.enCurso; } catch (e) { /* lo informa quien lo lanzó */ }
+    }
+  },
+
+  /**
+   * Después de guardar: un intento corto y silencioso, para que lo registrado
+   * llegue a la planilla cuanto antes. No toca la lista; si falla, queda para
+   * el botón Actualizar.
+   */
+  enSegundoPlano() {
+    if (!navigator.onLine) return;
+    this.enviar({ intentos: 1, espera: 20000 }).catch(() => {}).then(() => pintarEstadoSync());
   }
 };
 
 /** Quita los campos internos que el servidor no necesita. */
 function limpiarParaEnvio(s) {
-  const { enviada, error, tipo, ...resto } = s;
+  const { enviada, error, tipo, creado, intentado, previo, ...resto } = s;
   return resto;
 }
 
 async function encolar(sesion) {
   sesion.uuid = sesion.uuid || uuid();
+  sesion.creado = sesion.creado || Date.now();
   await DB.guardar('outbox', sesion);
   estado.outbox.push(sesion);
   pintar();
-  Sync.intentar();
+  Sync.enSegundoPlano();
 }
 
 /* ══════════════════════════════════════════════════════════════
    CENSO
    ══════════════════════════════════════════════════════════════ */
-async function refrescarCenso({ silencioso = false, dias = 0 } = {}) {
-  if (!navigator.onLine) {
-    if (!silencioso) toast('Sin conexión. Se usa el censo guardado.', 'info');
-    return;
+
+/** Lo que hay que recordar de la ronda además de los pacientes. */
+function guardarCacheLocal() {
+  return DB.guardar('config', {
+    egresos: estado.egresos,
+    catalogos: estado.catalogos,
+    diagnostico: estado.diagnostico,
+    diasCenso: estado.diasCenso,
+    diasPorDefecto: estado.diasPorDefecto,
+    ventana: estado.ventana,
+    actualizado: estado.actualizado
+  }, 'cache');
+}
+
+/** "2026-10-03" desplazada n días. En UTC para no tropezar con el cambio de hora. */
+function sumarDias(iso, n) {
+  const p = String(iso).split('-').map(Number);
+  const d = new Date(Date.UTC(p[0], p[1] - 1, p[2] + n));
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Amplía la ventana de la ronda hasta una fecha fija. Es fija a propósito: con
+ * "los últimos N días" el paciente del borde se caía al día siguiente. Vence
+ * sola a la semana, cuando ya hubo tiempo de atender a quienes siguen.
+ */
+function ampliarVentana(dias) {
+  const hoy = hoyISO();
+  return actualizar({ ventana: { desde: sumarDias(hoy, -(dias - 1)), vence: sumarDias(hoy, 7) } });
+}
+
+function volverVentanaNormal() {
+  return actualizar({ ventana: null });
+}
+
+/**
+ * @param {object|null} ventana La ventana a pedir. Queda en el estado solo si
+ *   la ronda llegó: si no, el aviso diría "viendo desde…" sobre la lista de
+ *   siempre.
+ */
+async function traerCenso(ventana) {
+  if (ventana && hoyISO() > ventana.vence) ventana = null;
+  // Nunca menos que la ventana habitual: pedir 10 días achicaría la ronda.
+  const dias = ventana
+    ? Math.max(diasDesde(ventana.desde) + 1, estado.diasPorDefecto || 14) : 0;
+
+  const pedidoEn = Date.now();
+  const j = await API.censo(dias);
+  fusionarCenso(j.pacientes || [], j.egresos || [], pedidoEn);
+  estado.ventana = ventana;
+  estado.catalogos = j.catalogos || estado.catalogos;
+  estado.diagnostico = j.diagnostico || null;
+  if (j.diasCenso) estado.diasCenso = j.diasCenso;
+  if (j.diasPorDefecto) estado.diasPorDefecto = j.diasPorDefecto;
+  estado.actualizado = Date.now();
+  await DB.reemplazar('censo', estado.censo);
+  await guardarCacheLocal();
+}
+
+/**
+ * Junta la ronda que manda la planilla con lo que todavía no le llegó.
+ *
+ * Reemplazarla sin más borraba de la vista lo hecho sin conexión: un ingreso
+ * sin enviar desaparecía, un egreso sin enviar devolvía al paciente a la ronda
+ * y un cambio de cama volvía al valor anterior.
+ *
+ * @param {number} [pedidoEn] Cuándo salió la petición. Lo confirmado después
+ *   (un envío en segundo plano que llegó antes que la ronda) puede no estar en
+ *   lo que leyó la planilla, así que cuenta como pendiente.
+ */
+function fusionarCenso(pacientes, egresos, pedidoEn = 0) {
+  const locales = new Map(estado.censo.map(p => [normRut(p.rut), p]));
+
+  const recientes = Sync.recientes.filter(x => x.en >= pedidoEn);
+  Sync.recientes = recientes;   // lo confirmado antes de pedir ya viene en la ronda
+
+  const conPendiente = new Set();   // RUT con sesiones o ingresos que la planilla aún no trae
+  const egresoPendiente = new Set();  // uuid de egresos que la planilla aún no trae
+  for (const s of [...estado.outbox, ...recientes]) {
+    if (s.tipo === 'egreso') egresoPendiente.add(s.uuid);
+    else conPendiente.add(normRut(s.rut));
   }
-  try {
-    const j = await API.censo(dias);
-    estado.censo = j.pacientes || [];
-    estado.egresos = j.egresos || [];
-    estado.catalogos = j.catalogos || estado.catalogos;
-    estado.diagnostico = j.diagnostico || null;
-    if (j.diasCenso) estado.diasCenso = j.diasCenso;
-    if (j.diasPorDefecto) estado.diasPorDefecto = j.diasPorDefecto;
-    await DB.reemplazar('censo', estado.censo);
-    await DB.guardar('config', {
-      egresos: estado.egresos,
-      catalogos: estado.catalogos,
-      diagnostico: estado.diagnostico,
-      diasCenso: estado.diasCenso,
-      diasPorDefecto: estado.diasPorDefecto,
-      generado: j.generado
-    }, 'cache');
-    if (!silencioso) {
-      toast(dias ? `${estado.censo.length} pacientes en los últimos ${dias} días`
-                 : `Censo al día: ${estado.censo.length} pacientes`, 'ok');
+  const egresadosAca = estado.egresos.filter(e => egresoPendiente.has(e.uuidEgreso));
+  const fueraDeRonda = new Set(egresadosAca.map(e => normRut(e.rut)));
+
+  const censo = [];
+  const vistos = new Set();
+  for (const p of pacientes) {
+    const r = normRut(p.rut);
+    if (vistos.has(r) || fueraDeRonda.has(r)) continue;
+    vistos.add(r);
+    const local = locales.get(r);
+
+    // La planilla aún no tiene lo de hoy: manda lo que hay en el teléfono.
+    if (local && conPendiente.has(r)) { censo.push(local); continue; }
+
+    // Cama o diagnóstico cambiados aquí y todavía sin una sesión que los lleve.
+    // Valen hasta que la planilla tenga una fila de un día posterior.
+    if (local && local.cambios && !(p.ultimaFecha > local.cambios.fecha)) {
+      Object.assign(p, local.cambios.valores);
+      p.cambios = local.cambios;
     }
-  } catch (err) {
-    if (!silencioso) toast('No se pudo actualizar: ' + err.message, 'error');
+    censo.push(p);
   }
-  pintar();
+  // Ingresos hechos en el teléfono que la planilla todavía no conoce.
+  for (const [r, local] of locales) {
+    if (!vistos.has(r) && conPendiente.has(r) && !fueraDeRonda.has(r)) {
+      censo.push(local);
+      vistos.add(r);
+    }
+  }
+
+  const listaEgresos = egresadosAca.slice();
+  for (const e of egresos) {
+    const r = normRut(e.rut);
+    if (!vistos.has(r) && !fueraDeRonda.has(r)) { listaEgresos.push(e); fueraDeRonda.add(r); }
+  }
+
+  estado.censo = censo;
+  estado.egresos = listaEgresos;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ACTUALIZAR
+   El único punto que trae datos nuevos: primero envía lo pendiente y después
+   baja la ronda. Nada lo dispara solo; la lista cambia cuando ella lo toca.
+   Tocarlo varias veces no lanza peticiones en paralelo: se espera la que ya
+   está en curso, con el icono girando para que se note que está trabajando.
+   ══════════════════════════════════════════════════════════════ */
+let actualizacion = null;
+
+/**
+ * @param {object} [cambios] { ventana } para pedir otra ventana, o
+ *   { config: true } tras cambiar la configuración. Si hay una actualización
+ *   en curso, esa salió con los valores de antes: se encadena otra en vez de
+ *   devolverla como si sirviera.
+ * @returns {Promise<boolean>} Si la ronda llegó.
+ */
+function actualizar(cambios = {}) {
+  const otraVentana = 'ventana' in cambios;
+  if (actualizacion) {
+    return (otraVentana || cambios.config) ? actualizacion.then(() => actualizar(cambios)) : actualizacion;
+  }
+  const ventana = otraVentana ? cambios.ventana : estado.ventana;
+
+  actualizacion = (async () => {
+    estado.ocupado = 'Actualizando…';
+    pintarOcupado();
+    buscarVersionNueva();
+    try {
+      const envio = await Sync.enviar();
+      estado.ocupado = 'Trayendo la ronda…';
+      pintarEstadoSync();
+      await traerCenso(ventana);
+
+      const n = estado.censo.length;
+      let msg = `Ronda al día: ${n} ${n === 1 ? 'paciente' : 'pacientes'}`;
+      if (envio.enviadas) {
+        msg += ` · ${envio.enviadas} ${envio.enviadas === 1 ? 'registro enviado' : 'registros enviados'}`;
+      }
+      if (envio.errores.length) {
+        toast(`${msg}. ${envio.errores.length} con error: toca el aviso rojo de arriba.`, 'error');
+      } else {
+        toast(msg, 'ok');
+      }
+      return true;
+    } catch (err) {
+      toast('No se pudo actualizar. ' + err.message +
+            (estado.outbox.length ? ' Lo registrado sigue guardado en el teléfono.' : ''), 'error');
+      return false;
+    } finally {
+      estado.ocupado = '';
+      actualizacion = null;
+      pintarOcupado();
+      pintar();
+    }
+  })();
+  return actualizacion;
+}
+
+/** El icono de actualizar gira mientras trabaja. */
+function pintarOcupado() {
+  const btn = document.getElementById('btnRefrescar');
+  if (btn) {
+    // estado.ocupado y no la promesa: al pintarse por primera vez, la promesa
+    // todavía no terminó de asignarse.
+    btn.classList.toggle('girando', !!estado.ocupado);
+    btn.setAttribute('aria-busy', estado.ocupado ? 'true' : 'false');
+  }
+  pintarEstadoSync();
+}
+
+/**
+ * Aprovecha el toque para ver si hay una versión nueva de la app publicada.
+ * Si la hay, el service worker la instala y aparece el aviso para recargar.
+ */
+function buscarVersionNueva() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.getRegistration()
+    .then(r => r && r.update())
+    .catch(() => { /* sin red: se verá la próxima vez */ });
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -379,7 +688,8 @@ function toast(msg, tipo = 'info') {
   t.textContent = msg;
   t.className = `toast ${tipo} visible`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = 'toast ' + tipo; }, 3200);
+  // Un error se lee con más calma que un "listo".
+  toastTimer = setTimeout(() => { t.className = 'toast ' + tipo; }, tipo === 'error' ? 6000 : 3200);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -387,11 +697,19 @@ function toast(msg, tipo = 'info') {
    ══════════════════════════════════════════════════════════════ */
 function pintarEstadoSync() {
   const el = document.getElementById('pillSync');
-  const pend = estado.outbox.filter(s => !s.enviada).length;
+  if (!el) return;
+  const pend = estado.outbox.length;
+  const conError = estado.outbox.filter(s => s.error).length;
 
-  if (Sync.enCurso) {
+  if (estado.ocupado) {
     el.className = 'pill sync-off';
-    el.innerHTML = 'Sincronizando…';
+    el.textContent = estado.ocupado;
+  } else if (Sync.enCurso) {
+    el.className = 'pill sync-off';
+    el.textContent = 'Sincronizando…';
+  } else if (conError) {
+    el.className = 'pill sync-error';
+    el.innerHTML = `${ICO.alerta} ${conError} con error`;
   } else if (pend > 0) {
     el.className = 'pill sync-pend';
     el.innerHTML = `${ICO.nube} ${pend} sin sincronizar`;
@@ -402,6 +720,41 @@ function pintarEstadoSync() {
     el.className = 'pill sync-ok';
     el.innerHTML = `${ICO.ok} Todo sincronizado`;
   }
+}
+
+/**
+ * De cuándo es la lista. Como ya no se recarga sola, tiene que verse si es de
+ * hoy o de ayer: una lista de ayer es la explicación de "faltan pacientes".
+ */
+function pintarEstadoLista() {
+  const el = document.getElementById('estadoLista');
+  if (!el) return;
+  if (!estado.actualizado) {
+    el.textContent = 'Lista sin descargar · toca ↻';
+    el.className = 'frescura alerta';
+    return;
+  }
+  const deHoy = diasDesde(isoDe(estado.actualizado)) === 0;
+  const cuando = fechaHora(estado.actualizado);   // "hoy 08:12", "ayer 17:40", "1 oct 17:40"
+  el.textContent = deHoy ? `Lista de las ${cuando.slice(4)}`
+                         : `Lista ${cuando.startsWith('ayer') ? 'de' : 'del'} ${cuando} · toca ↻`;
+  el.className = 'frescura' + (deHoy ? '' : ' alerta');
+}
+
+/** Fecha local de una marca de tiempo, como "2026-10-03". */
+function isoDe(t) {
+  const d = new Date(t);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** La fecha de la cabecera. Se repinta al volver a la app: puede haber quedado abierta desde ayer. */
+function pintarFecha() {
+  const el = document.getElementById('fechaHoy');
+  if (!el) return;
+  const d = new Date();
+  const dias = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+  const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  el.textContent = `${dias[d.getDay()]} ${d.getDate()} de ${meses[d.getMonth()]}`.replace(/^./, m => m.toUpperCase());
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -432,6 +785,11 @@ function motivoRondaVacia() {
   const d = estado.diagnostico;
   const dias = estado.diasCenso || 14;
 
+  if (!estado.actualizado && !d) {
+    return `<p>La ronda todavía no se ha descargado en este teléfono.</p>
+            <p class="meta">Toca <strong>↻</strong> arriba a la derecha para traerla de la planilla.</p>`;
+  }
+
   if (!d) return `<p>No hay pacientes activos. Usa Ingreso para agregar uno.</p>`;
 
   if (!d.filasLeidas) {
@@ -457,7 +815,7 @@ function motivoRondaVacia() {
             : ''} La ronda solo muestra a quienes siguen hospitalizados.</p>
           ${(brecha && brecha > dias && brecha <= 120) ? `
             <button class="btn btn-secundario" id="ampliarCenso" style="margin-top:14px">
-              Ver los últimos ${brecha + 1} días
+              Ver los últimos ${diasParaAmpliar()} días
             </button>
             <p class="meta" style="margin-top:8px">Por si alguno sigue hospitalizado
               y no quieres volver a escribirlo.</p>` : `
@@ -465,6 +823,18 @@ function motivoRondaVacia() {
 }
 
 const fmtMil = (n) => Number(n || 0).toLocaleString('es-CL');
+
+/**
+ * Cuántos días pedir para ver la ronda que había en su último día de registro:
+ * los 14 días habituales contados desde ese día, no desde hoy. Antes se pedían
+ * solo los días transcurridos más uno, y eso traía únicamente a los pacientes
+ * de su último día; los que veía cada dos o tres días, o una vez por semana
+ * (UTI), quedaban fuera.
+ */
+function diasParaAmpliar() {
+  const brecha = diasDesde(estado.diagnostico && estado.diagnostico.registroMasReciente);
+  return Math.min(brecha + (estado.diasPorDefecto || 14), 120);
+}
 
 /**
  * Días entre una fecha ISO y hoy.
@@ -491,14 +861,30 @@ function fechaCorta(iso) {
   return (meses[m - 1]) ? `${parseInt(p[2], 10)} de ${meses[m - 1]}` : '';
 }
 
+/* Servicios plegados por ella. Por teléfono: es una comodidad, no un dato. */
+const plegados = {
+  leer() {
+    try { return new Set(JSON.parse(localStorage.getItem('plegados') || '[]')); } catch (e) { return new Set(); }
+  },
+  alternar(servicio) {
+    const s = this.leer();
+    if (s.has(servicio)) s.delete(servicio); else s.add(servicio);
+    try { localStorage.setItem('plegados', JSON.stringify([...s])); } catch (e) { /* sin almacenamiento */ }
+  }
+};
+
 function pintarRonda() {
+  pintarEstadoLista();
   const cont = document.getElementById('lista');
   const reg = registradosHoy();
   const lista = pacientesFiltrados();
 
   // Progreso: solo sobre el censo real, no sobre el resultado de una búsqueda.
-  const total = estado.censo.length;
-  const hechos = estado.censo.filter(p => reg.has(normRut(p.rut))).length;
+  // Los de un servicio que solo cubre (UTI algunos días) no cuentan como
+  // pendientes: si no, la barra no llegaría nunca al 100% los otros días.
+  const propios = estado.censo.filter(p => !p.cubierto || reg.has(normRut(p.rut)));
+  const total = propios.length;
+  const hechos = propios.filter(p => reg.has(normRut(p.rut))).length;
   const pct = total ? Math.round(hechos * 100 / total) : 0;
 
   document.getElementById('progresoTexto').innerHTML =
@@ -506,18 +892,30 @@ function pintarRonda() {
   document.getElementById('progresoPct').textContent = total ? pct + '%' : '—';
   document.getElementById('progresoRelleno').style.width = pct + '%';
 
+  // Con la ventana ampliada pueden aparecer pacientes ya dados de alta sin que
+  // nadie lo registrara. Conviene decirlo antes de que los dé por activos, y
+  // dar la salida a la vista normal en el mismo lugar.
+  const avisoVentana = (estado.ventana && !estado.busqueda) ? `
+    <div class="banda info" style="margin-bottom:12px">
+      Viendo desde el <strong>${esc(fechaCorta(estado.ventana.desde))}</strong>, no solo los
+      últimos ${estado.diasPorDefecto} días.
+      <span class="meta">Algunos pueden haber egresado ya. Registra a los que sigan
+      hospitalizados; esta vista se mantiene hasta el ${esc(fechaCorta(estado.ventana.vence))}.</span>
+      <button class="btn-bloque" id="ventanaNormal">Volver a los últimos ${estado.diasPorDefecto} días</button>
+    </div>` : '';
+
   if (!lista.length) {
-    cont.innerHTML = `<div class="vacio">${ICO.cama}${
+    cont.innerHTML = avisoVentana + `<div class="vacio">${ICO.cama}${
       estado.busqueda ? '<p>Sin resultados para esa búsqueda.</p>' : motivoRondaVacia()}</div>`;
     document.getElementById('bloqueEgresos').classList.add('oculto');
 
     const amp = document.getElementById('ampliarCenso');
     if (amp) amp.addEventListener('click', () => {
-      const d = diasDesde(estado.diagnostico && estado.diagnostico.registroMasReciente) + 1;
       amp.disabled = true;
       amp.textContent = 'Buscando…';
-      refrescarCenso({ dias: d });
+      ampliarVentana(diasParaAmpliar());
     });
+    conectarVentanaNormal(cont);
     return;
   }
 
@@ -532,35 +930,62 @@ function pintarRonda() {
     arr.sort((a, b) => (parseInt(a.cama, 10) || 0) - (parseInt(b.cama, 10) || 0));
   }
 
-  // Con la ventana ampliada pueden aparecer pacientes ya dados de alta sin que
-  // nadie lo registrara. Conviene decirlo antes de que los dé por activos.
-  let html = (estado.diasCenso > estado.diasPorDefecto) ? `
-    <div class="banda info" style="margin-bottom:12px">
-      Viendo los últimos <strong>${estado.diasCenso} días</strong>, no los
-      ${estado.diasPorDefecto} habituales.
-      <span class="meta">Algunos pueden haber egresado ya. Registra una sesión a los
-      que sigan hospitalizados y vuelve a la vista normal con el botón de recargar.</span>
-    </div>` : '';
-
+  // Primero los servicios con pacientes propios; al final los que solo cubre,
+  // para que los días que no va a UTI su lista de siempre quede arriba.
+  const soloCubierto = (arr) => arr.every(p => p.cubierto && !reg.has(normRut(p.rut)));
   const ordenados = [...grupos.entries()].sort((a, b) => {
+    const c = soloCubierto(a[1]) - soloCubierto(b[1]);
+    if (c !== 0) return c;
     const d = ordenServicio(a[0]) - ordenServicio(b[0]);
     return d !== 0 ? d : a[0].localeCompare(b[0]);
   });
 
+  const cerrados = estado.busqueda ? new Set() : plegados.leer();
+  let html = avisoVentana;
   for (const [servicio, pacientes] of ordenados) {
     const info = servicioInfo(servicio);
-    html += `<div class="grupo-titulo">
+    const cerrado = cerrados.has(servicio);
+    const cubre = soloCubierto(pacientes);
+    html += `<button class="grupo-titulo${cerrado ? ' cerrado' : ''}" data-grupo="${esc(servicio)}"
+                     aria-expanded="${cerrado ? 'false' : 'true'}">
         <span class="grupo-punto" style="background:${info.color}"></span>
-        <span>${esc(servicio)}${info.nombre ? ' · ' + esc(info.nombre) : ''}</span>
+        <span class="grupo-nombre">${esc(servicio)}${info.nombre ? ' · ' + esc(info.nombre) : ''}</span>
+        ${cubre ? '<span class="grupo-etiqueta">Cubres</span>' : ''}
         <span class="grupo-conteo">${pacientes.length} ${pacientes.length === 1 ? 'paciente' : 'pacientes'}</span>
-      </div>`;
-    html += pacientes.map(p => tarjeta(p, reg, info)).join('');
+        <span class="grupo-flecha">${ICO.flecha}</span>
+      </button>`;
+    html += `<div class="grupo-cuerpo${cerrado ? ' oculto' : ''}">${
+      pacientes.map(p => tarjeta(p, reg, info)).join('')}</div>`;
+  }
+  // La ventana de 14 días deja fuera a quien no se registró en dos semanas.
+  // Antes la única salida aparecía con la ronda vacía.
+  if (!estado.ventana && !estado.busqueda) {
+    html += `<button class="enlace-mas" id="verMasDias">¿Falta alguien? Ver los últimos 30 días</button>`;
   }
   cont.innerHTML = html;
+
+  const mas = document.getElementById('verMasDias');
+  if (mas) mas.addEventListener('click', () => {
+    mas.disabled = true;
+    mas.textContent = 'Buscando…';
+    ampliarVentana(30);
+  });
 
   cont.querySelectorAll('[data-rut]').forEach(el => {
     el.addEventListener('click', () => abrirSesion(el.dataset.rut));
   });
+  // Tocar el título de un servicio lo pliega: útil para esconder UTI los días
+  // que no le toca, sin sacarla de la configuración.
+  cont.querySelectorAll('[data-grupo]').forEach(el => {
+    el.addEventListener('click', () => {
+      // Durante una búsqueda los grupos se muestran abiertos: plegar sin que se
+      // note escondería a los pendientes al volver a la lista completa.
+      if (estado.busqueda) return;
+      plegados.alternar(el.dataset.grupo);
+      pintarRonda();
+    });
+  });
+  conectarVentanaNormal(cont);
 
   // Egresos recuperables
   const bloque = document.getElementById('bloqueEgresos');
@@ -572,6 +997,15 @@ function pintarRonda() {
   }
 }
 
+function conectarVentanaNormal(cont) {
+  const btn = cont.querySelector('#ventanaNormal');
+  if (btn) btn.addEventListener('click', () => {
+    btn.disabled = true;
+    btn.textContent = 'Volviendo…';
+    volverVentanaNormal();
+  });
+}
+
 function tarjeta(p, reg, info) {
   const hecho = reg.has(normRut(p.rut));
   const limite = diasSugeridos(p.categorizacion);
@@ -581,11 +1015,18 @@ function tarjeta(p, reg, info) {
   const detalle = [p.diagnostico1, p.rem1 ? 'REM ' + p.rem1 : '', p.ges ? 'GES ' + p.ges : '']
     .filter(Boolean).join(' · ');
 
+  // Si la última atención la registró una colega, se dice quién: es lo que
+  // explica que un paciente de UTI aparezca aunque ella no lo haya visto.
+  const otra = !hecho && p.fono && estado.config && p.fono !== estado.config.fono;
+  const quien = otra
+    ? `Última atención: ${p.fono}${p.ultimaFecha ? ', ' + fechaCorta(p.ultimaFecha) : ''}` : '';
+
   return `<button class="tarjeta${atrasado ? ' alerta' : ''}${esEgreso ? ' egresado' : ''}" data-rut="${esc(p.rut)}">
       <span class="cama" style="background:${info.color}">${esc(p.cama)}</span>
       <span class="tarjeta-cuerpo">
         <span class="tarjeta-nombre">${esc(p.nombre)}</span>
         <span class="tarjeta-detalle">${esc(detalle)}</span>
+        ${quien ? `<span class="tarjeta-detalle">${esc(quien)}</span>` : ''}
         ${atrasado ? `<span class="tarjeta-aviso">${ICO.alerta} ${p.diasSinAtencion} días sin atención</span>` : ''}
         ${esEgreso ? `<span class="tarjeta-detalle">Egresado · ${esc(p.motivoEgreso)}</span>` : ''}
       </span>
@@ -617,13 +1058,30 @@ function alternarBuscador(abrir) {
 async function iniciar() {
   await DB.abrir();
 
+  // Una recarga conserva el estado del historial: si quedó la marca de una
+  // pantalla abierta, cerrarPantalla volvería atrás sobre la lista.
+  if (history.state && history.state.pantalla) history.replaceState(null, '');
+
+  // Lo que la versión anterior guardó del dashboard no sirve: pudo quedar un mes
+  // guardado con las cifras de otro, un mes calculado antes de terminar o las
+  // alertas con nombres de pacientes. Se borra una vez y se vuelve a calcular.
+  try {
+    if (localStorage.getItem('cacheVer') !== '2') {
+      cache.limpiar();
+      localStorage.setItem('cacheVer', '2');
+    }
+  } catch (e) { /* sin almacenamiento: no hay nada guardado */ }
+
   // Pide al navegador que no borre los datos por falta de espacio.
   if (navigator.storage && navigator.storage.persist) {
     try { await navigator.storage.persist(); } catch (e) { /* no crítico */ }
   }
 
   estado.config = await DB.get('config', 'app');
-  estado.outbox = await DB.todos('outbox');
+  // En el orden en que se registraron: la base los devuelve ordenados por uuid,
+  // que es azar, y un egreso podía llegar a la planilla antes que la sesión del
+  // mismo día y dejar al paciente de vuelta en la ronda.
+  estado.outbox = (await DB.todos('outbox')).sort((a, b) => (a.creado || 0) - (b.creado || 0));
   estado.censo  = await DB.todos('censo');
 
   const guardado = await DB.get('config', 'cache');
@@ -633,6 +1091,9 @@ async function iniciar() {
     estado.diagnostico = guardado.diagnostico || null;
     estado.diasCenso     = guardado.diasCenso || estado.diasCenso;
     estado.diasPorDefecto = guardado.diasPorDefecto || estado.diasPorDefecto;
+    estado.ventana     = guardado.ventana || null;
+    // La versión anterior solo guardaba la hora del servidor.
+    estado.actualizado = guardado.actualizado || Date.parse(guardado.generado || '') || 0;
   }
 
   const tema = await DB.get('config', 'tema');
@@ -643,14 +1104,46 @@ async function iniciar() {
     return;
   }
 
+  // Configuraciones anteriores no tenían servicios cubiertos. La usuaria cubre
+  // UTI una o dos veces por semana: queda marcada para que sus pacientes
+  // aparezcan sin pasar por la configuración. Se cambia desde el engranaje.
+  if (!Array.isArray(estado.config.servicios)) {
+    estado.config.servicios = ['UTI'];
+    await DB.guardar('config', estado.config, 'app');
+  }
+
+  // La versión anterior, al guardar la configuración, dejaba en memoria el
+  // nombre de la profesional vacío hasta cerrar la app. Lo registrado en ese
+  // rato la planilla lo rechazaba ("Faltan campos obligatorios: Fonoaudiólogo/a")
+  // y quedaba en el teléfono para siempre. Todo lo de este teléfono es suyo.
+  for (const s of estado.outbox) {
+    if (!String(s['fonoaudiólogo'] || '').trim() && estado.config.fono) {
+      s['fonoaudiólogo'] = estado.config.fono;
+      delete s.error;
+      await DB.guardar('outbox', s);
+    }
+  }
+
   mostrarApp();
   pintar();
-  refrescarCenso({ silencioso: estado.censo.length > 0 });
+  // Sin descarga automática al abrir: la lista cambia solo cuando ella toca
+  // actualizar. Lo único que se hace solo es intentar enviar lo pendiente.
+  if (estado.outbox.some(s => !s.error)) Sync.enSegundoPlano();
 }
 
-window.addEventListener('online',  () => { estado.enLinea = true;  pintarEstadoSync(); Sync.intentar(); });
+// La conexión solo cambia lo que dice la píldora; no dispara descargas.
+window.addEventListener('online',  () => { estado.enLinea = true;  pintarEstadoSync(); });
 window.addEventListener('offline', () => { estado.enLinea = false; pintarEstadoSync(); });
-document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.intentar(); });
+// Al volver a la app se repinta: si quedó abierta desde ayer, la fecha y los
+// "registrado hoy" tienen que ser los de hoy.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !estado.config || document.getElementById('app').classList.contains('oculto')) return;
+  pintarFecha();
+  pintar();
+  // "Calculado hoy" también puede haber quedado de ayer.
+  if (estado.vista === 'dashboard') pintarDashboard();
+  else if (estado.vista === 'informes') pintarInformes();
+});
 
 window.addEventListener('DOMContentLoaded', () => {
   iniciar().catch(err => {

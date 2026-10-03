@@ -312,8 +312,14 @@ function construirFila_(data) {
   if (isNaN(anio) || isNaN(mes) || isNaN(dia)) {
     throw new Error('La fecha "' + data.fecha + '" no es válida.');
   }
-  var fecha = new Date(anio, mes - 1, dia);
-  var nombreMes = fecha.toLocaleString('es-CL', { month: 'long' }).toUpperCase();
+  // El nombre del mes sale de una lista fija y no de toLocaleString: así no
+  // depende del idioma del servidor. La ronda y el REM buscan exactamente
+  // estos nombres; un "SEPTEMBER" dejaría la fila fuera de los dos.
+  var nombreMes = ['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO',
+                   'AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'][mes - 1];
+  if (!nombreMes || dia < 1 || dia > 31) {
+    throw new Error('La fecha "' + data.fecha + '" no es válida.');
+  }
 
   // Condición de hospitalización: una columna 1/0 por opción.
   var condiciones = [].concat(data.condicionHospitalizacion || []);

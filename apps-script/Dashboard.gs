@@ -183,7 +183,7 @@ function construirDashboard_(mes, fono) {
     rem17:     calcularRem17_(filas),
     sinAsignar: calcularSinAsignar_(filas),
     servicios: calcularPorServicio_(filas),
-    alertas:   calcularAlertas_(filas, fono),
+    alertas:   calcularAlertas_(filas, fono, esMesEnCurso_(anio, mesNum)),
     validacion: null
   };
 }
@@ -408,10 +408,18 @@ function calcularPorServicio_(filas) {
   return res;
 }
 
+function esMesEnCurso_(anio, mesNum) {
+  var hoy = new Date();
+  return anio === hoy.getFullYear() && mesNum === hoy.getMonth() + 1;
+}
+
 /**
  * Alertas por reglas fijas, sin IA. Son deterministas: o se cumplen o no.
+ *
+ * @param {boolean} enCurso Las alertas de pacientes sin atención describen la
+ *   ronda de HOY: en el dashboard o el informe de un mes pasado no corresponden.
  */
-function calcularAlertas_(filas, fono) {
+function calcularAlertas_(filas, fono, enCurso) {
   var alertas = [];
 
   var sinRem = filas.filter(function (f) {
@@ -437,16 +445,20 @@ function calcularAlertas_(filas, fono) {
   }
 
   // Pacientes activos que llevan más días sin atención que los sugeridos.
-  try {
-    var censo = construirCenso_(fono);
-    censo.pacientes.forEach(function (p) {
-      var limite = p.categorizacion === '2' ? 3 : (p.categorizacion === '1' ? 7 : 7);
-      if (p.diasSinAtencion > limite) {
-        alertas.push({ tipo: 'aviso', titulo: 'Cama ' + p.cama + ' · ' + p.servicio,
-          detalle: p.diasSinAtencion + ' días sin atención registrada (' + p.nombre + ').' });
-      }
-    });
-  } catch (err) { /* el censo no es imprescindible para el dashboard */ }
+  if (enCurso) {
+    try {
+      var censo = construirCenso_(fono);
+      censo.pacientes.forEach(function (p) {
+        var limite = p.categorizacion === '2' ? 3 : (p.categorizacion === '1' ? 7 : 7);
+        if (p.diasSinAtencion > limite) {
+          alertas.push({ tipo: 'aviso', titulo: 'Cama ' + p.cama + ' · ' + p.servicio,
+            // Sin el nombre: el dashboard se guarda en el teléfono y solo debe llevar cifras.
+            // La cama y el servicio bastan para ubicar al paciente en la ronda.
+            detalle: p.diasSinAtencion + ' días sin atención registrada.' });
+        }
+      });
+    } catch (err) { /* el censo no es imprescindible para el dashboard */ }
+  }
 
   return alertas;
 }

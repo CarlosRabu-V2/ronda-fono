@@ -12,6 +12,13 @@
 </head>
 <body>
 
+<!-- Aparece cuando se instaló una versión nueva de la app. Va en el flujo, arriba
+     de todo, y no fijo: así no tapa los botones de la cabecera. -->
+<div class="aviso-version oculto" id="avisoVersion">
+  <button id="avisoVersionCargar">Hay una versión nueva de la app · Toca para cargarla</button>
+  <button id="avisoVersionCerrar" aria-label="Ahora no">×</button>
+</div>
+
 <!-- Configuración inicial -->
 <div id="configuracion" class="oculto"></div>
 
@@ -30,7 +37,10 @@
         <button class="icon-btn" id="btnAjustes" aria-label="Configuración"></button>
       </div>
 
-      <div style="padding:0 16px 8px;font-size:13px;color:var(--text-secondary)" id="fechaHoy"></div>
+      <div class="subfila">
+        <span id="fechaHoy"></span>
+        <span class="frescura" id="estadoLista"></span>
+      </div>
 
       <div class="buscador">
         <button class="buscador-cerrado" id="buscadorCerrado">
@@ -83,6 +93,7 @@
 
 <div class="toast" id="toast"></div>
 
+
 <!-- Aquí se arma el informe justo antes de imprimir. Invisible en pantalla. -->
 <div id="impresion"></div>
 
@@ -105,6 +116,47 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+
+    // Antes una versión nueva llegaba recién al segundo arranque y no había
+    // forma de saberlo. Ahora, cuando el service worker nuevo toma el control,
+    // se ofrece recargar. Solo si ya había uno: la primera instalación no avisa.
+    const habiaVersion = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!habiaVersion) return;
+      document.getElementById('avisoVersion').classList.remove('oculto');
+    });
+    document.getElementById('avisoVersionCargar').onclick = () => location.reload();
+    document.getElementById('avisoVersionCerrar').onclick = () =>
+      document.getElementById('avisoVersion').classList.add('oculto');
+  }
+
+  // El service worker anterior (v9) refrescaba cada archivo por su cuenta: con
+  // mala señal podía dejar mezclados archivos de dos versiones, y esa mezcla no
+  // funciona. Si falta algo de esta versión, se dice qué hacer en vez de fallar
+  // en silencio al tocar un botón.
+  const completa = typeof actualizar === 'function' && typeof abrirBandeja === 'function' &&
+                   typeof Meses === 'object' && typeof actualizarInformes === 'function';
+  if (!completa) {
+    // Sin arranque: el de app.js (nuevo o viejo) fallaría con esta pantalla
+    // puesta y la taparía con "No se pudo iniciar".
+    window.iniciar = () => Promise.resolve();
+    window.addEventListener('DOMContentLoaded', () => {
+      document.body.innerHTML = `<div class="centrado">
+          <h1>Falta terminar de actualizar</h1>
+          <p>La versión nueva de la app se descargó a medias por falta de señal.
+             Conéctate a wifi o a una red con buena señal y toca el botón.</p>
+          <button class="btn btn-primario" id="completarVersion">Completar la actualización</button>
+        </div>`;
+      document.getElementById('completarVersion').onclick = () => {
+        const recargar = () => location.reload();
+        if (!('serviceWorker' in navigator)) return recargar();
+        navigator.serviceWorker.addEventListener('controllerchange', recargar);
+        navigator.serviceWorker.getRegistration()
+          .then(r => r && r.update())
+          .catch(() => {})
+          .finally(() => setTimeout(recargar, 8000));
+      };
+    });
   }
 </script>
 </body>

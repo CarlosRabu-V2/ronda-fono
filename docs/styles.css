@@ -638,3 +638,76 @@ main { padding: 0 var(--margin) 148px; }
    "Ronda" terminaba partido letra por letra en vertical. */
 .barra-titulo { flex-shrink: 0; }
 .barra-titulo h1 { white-space: nowrap; }
+
+/* ── Cabecera de la ronda: la fecha y de cuándo es la lista ── */
+.subfila {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px 10px;
+  padding: 0 var(--margin) 8px; font-size: 13px; color: var(--text-secondary);
+}
+.subfila .frescura { padding: 0; }
+/* En el dashboard y los informes la frescura va bajo el título, con el margen de la barra. */
+.barra > .frescura { padding: 0 var(--margin) 8px; }
+
+.pill svg { width: 14px; height: 14px; }
+.pill.sync-error { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
+
+/* ── Grupos de servicio plegables ── */
+button.grupo-titulo { width: 100%; text-align: left; min-height: 40px; margin: 10px 0 6px; padding: 4px 0; }
+.grupo-nombre { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grupo-etiqueta {
+  flex-shrink: 0; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; letter-spacing: 0.04em;
+  background: var(--primary-soft); color: var(--primary);
+}
+.grupo-conteo { white-space: nowrap; }
+.grupo-flecha { display: flex; color: var(--text-muted); }
+.grupo-flecha svg { width: 16px; height: 16px; transition: transform 0.2s; }
+.grupo-titulo.cerrado .grupo-flecha svg { transform: rotate(-90deg); }
+
+/* ── Bandeja de lo que no se ha enviado ── */
+.bandeja-item {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px; margin-bottom: 8px;
+}
+.bandeja-item.con-error { border-color: var(--danger); }
+.bandeja-cab { display: flex; flex-direction: column; font-size: 14px; }
+.bandeja-cab span { font-size: 12px; color: var(--text-secondary); }
+.bandeja-error {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin-top: 6px; font-size: 12px; color: var(--danger);
+}
+.bandeja-error svg { width: 14px; height: 14px; flex-shrink: 0; margin-top: 2px; }
+.bandeja-acciones { display: flex; gap: 8px; margin-top: 8px; }
+.bandeja-acciones .btn { min-height: 40px; font-size: 13px; }
+
+/* ── Aviso de versión nueva ──
+   En el flujo de la página y no fijo: fijo arriba tapaba los botones de la
+   cabecera, y tocarlo para llegar a ellos recargaba y perdía la sesión a medio
+   llenar. Mientras hay una pantalla completa abierta no se muestra. */
+.aviso-version {
+  display: flex; align-items: stretch;
+  background: var(--primary); color: var(--on-primary);
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.aviso-version button { color: inherit; font-size: 14px; font-weight: 600; min-height: 44px; }
+#avisoVersionCargar { flex: 1; padding: 8px var(--margin); text-align: left; }
+#avisoVersionCerrar { width: 48px; font-size: 22px; }
+body:has(#app.en-pantalla) .aviso-version { display: none; }
+@media print { .aviso-version { display: none !important; } }
+
+/* ── Pantallas completas (sesión, ingreso) ──
+   Sin la barra inferior: tapaba el botón Guardar y un toque en ella cambiaba
+   de vista y perdía lo escrito. Para salir están Atrás y Cancelar. */
+#app.en-pantalla .nav { display: none; }
+/* Un nombre largo se parte en dos líneas en vez de empujar el menú ⋮ fuera de la pantalla. */
+#pantalla .barra-titulo { flex-shrink: 1; min-width: 0; }
+#pantalla .barra-titulo h1 { white-space: normal; }
+
+/* En Informes la barra inferior sí está: el botón del PDF va por encima de ella. */
+#informes .acciones { bottom: calc(57px + env(safe-area-inset-bottom, 0px)); }
+
+.enlace-mas {
+  display: block; width: 100%; min-height: 44px; margin-top: 12px;
+  font-size: 13px; font-weight: 500; color: var(--primary); text-align: center;
+}
+

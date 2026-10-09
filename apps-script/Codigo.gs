@@ -23,6 +23,10 @@ var COL = {
   INICIAL: 28,  INTER: 29
 };
 
+// Columnas de una fila completa: hasta INTER, más 6 evaluaciones, 7 intervenciones,
+// la disfunción y educación EG y EF (ver construirFila_).
+var ANCHO_FILA = 46;
+
 // Columnas que indican que el paciente dejó la cama.
 // OTRO_SERV no va aquí: cambiar de servicio no cierra el episodio.
 var COLS_EGRESO = [COL.ALTA, COL.ABANDONO, COL.FALLECIMIENTO, COL.OTRO_HOSP];
@@ -89,14 +93,15 @@ function getHoja_() {
 }
 
 /**
- * Lee solo las columnas necesarias para las búsquedas, en vez de la hoja entera.
- * Con miles de filas la diferencia se nota en el celular.
+ * Lee las filas completas, sin columnas que no sean de registros. El censo
+ * necesita todas para saber si una fila trae atención (un ingreso que espera
+ * su primera sesión, una salida deshecha), con la misma regla que al guardar.
  */
 function leerDatosBusqueda_() {
   var hoja = getHoja_();
   var ultimaFila = hoja.getLastRow();
   if (ultimaFila < 2) return [];
-  var nCols = COL.CATEGORIZA + 1;
+  var nCols = ANCHO_FILA;
   return hoja.getRange(2, 1, ultimaFila - 1, nCols).getValues();
 }
 

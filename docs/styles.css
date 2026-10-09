@@ -277,7 +277,8 @@ main { padding: 0 var(--margin) 148px; }
 }
 .campo input:focus, .campo select:focus { outline: none; border: 2px solid var(--primary); padding: 9px 11px; }
 .campo input.falta, .campo select.falta { border-color: var(--danger); background: var(--danger-soft); }
-.campo .ayuda { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.ayuda { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.pregunta { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
 
 .fila-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gutter); }
 

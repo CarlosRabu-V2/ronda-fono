@@ -235,7 +235,8 @@ function registradosHoy() {
   const hoy = hoyISO();
   const set = new Set();
   estado.outbox.forEach(s => { if (s.fecha === hoy && s.tipo === 'sesion') set.add(normRut(s.rut)); });
-  estado.censo.forEach(p => { if (ultimaMia(p) === hoy) set.add(normRut(p.rut)); });
+  // Un ingreso sin su primera sesión todavía no es una atención.
+  estado.censo.forEach(p => { if (ultimaMia(p) === hoy && !p.soloIngreso) set.add(normRut(p.rut)); });
   return set;
 }
 

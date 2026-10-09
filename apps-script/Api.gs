@@ -95,6 +95,29 @@ function getHojaSync_() {
   return hoja;
 }
 
+/**
+ * Lo que dice _sync de cada fila de la planilla. Una fila puede tener varias
+ * entradas: el ingreso, la atención y la salida de un mismo día van juntos.
+ * La cuarta columna marca las salidas deshechas (ver anularEgreso_).
+ */
+function leerSync_() {
+  var res = { uuids: {}, usos: {}, ultimoUuid: {}, anuladas: {} };
+  var hojaSync = getHojaSync_();
+  var ultima = hojaSync.getLastRow();
+  if (ultima < 2) return res;
+  hojaSync.getRange(2, 1, ultima - 1, 4).getValues().forEach(function (f) {
+    if (!f[0]) return;
+    res.uuids[String(f[0])] = true;
+    var n = Number(f[2]);
+    if (!n) return;
+    res.usos[n] = (res.usos[n] || 0) + 1;
+    res.ultimoUuid[n] = String(f[0]);
+    // Manda la última entrada: si la fila vacía se volvió a ocupar, ya no está anulada.
+    res.anuladas[n] = f[3] === 'anulado';
+  });
+  return res;
+}
+
 
 // ══════════════════════════════════════════════════════════
 // RESPUESTAS
@@ -204,6 +227,9 @@ function construirCenso_(fono, diasPedidos, serviciosCubiertos) {
     return f;
   }
 
+  // Qué fila escribió cada registro de la app, para poder deshacer un egreso.
+  var sync = leerSync_();
+
   var ultima = {};    // última fila de cada RUT, de cualquier profesional
   var propia = {};    // última fila de cada RUT escrita por esta profesional
   var conteo = {};
@@ -213,6 +239,9 @@ function construirCenso_(fono, diasPedidos, serviciosCubiertos) {
     var fila = datos[i];
     var rut = normalizarRut_(fila[COL.RUT]);
     if (!rut) continue;
+    // Una salida deshecha que no traía atención dejó la fila vacía: no es una
+    // atención, y contarla dejaba al paciente como atendido ese día.
+    if (sync.anuladas[i + 2] && esFilaVacia_(fila)) continue;
 
     var reg = { fila: fila, fecha: fechaDeFila(fila), indice: i };
     conteo[rut] = (conteo[rut] || 0) + 1;
@@ -223,15 +252,6 @@ function construirCenso_(fono, diasPedidos, serviciosCubiertos) {
     filasPropias++;
     if (esMasReciente_(reg, propia[rut])) propia[rut] = reg;
     if (reg.fecha && (!masReciente || reg.fecha > masReciente)) masReciente = reg.fecha;
-  }
-
-  // Qué fila escribió cada sesión de la app, para poder deshacer un egreso.
-  var uuidPorFila = {};
-  var hojaSync = getHojaSync_();
-  if (hojaSync.getLastRow() > 1) {
-    hojaSync.getRange(2, 1, hojaSync.getLastRow() - 1, 3).getValues().forEach(function (f) {
-      if (f[0] && f[2]) uuidPorFila[Number(f[2])] = String(f[0]);
-    });
   }
 
   var activos = [], egresosRecientes = [];
@@ -247,6 +267,9 @@ function construirCenso_(fono, diasPedidos, serviciosCubiertos) {
     p.ultimaFechaMia  = mia ? iso(mia.fecha) : '';             // la de esta profesional
     p.diasSinAtencion = diasSin;
     p.atencionesPrevias = n;
+    // Lo ingresó y todavía no registra la primera sesión: en la ronda sigue
+    // pendiente, no atendido. La sesión completará esa misma fila.
+    if (mia && esIngresoSinSesion_(mia.fila)) p.soloIngreso = true;
     return p;
   }
 
@@ -254,7 +277,7 @@ function construirCenso_(fono, diasPedidos, serviciosCubiertos) {
     p.motivoEgreso = motivoEgreso_(reg.fila);
     // Sin el uuid, la app no puede deshacer el egreso después de recargar
     // el censo. leerDatosBusqueda_ parte en la fila 2 de la hoja.
-    p.uuidEgreso = uuidPorFila[reg.indice + 2] || '';
+    p.uuidEgreso = sync.ultimoUuid[reg.indice + 2] || '';
     return p;
   }
 
@@ -393,6 +416,10 @@ function doPost(e) {
  * Escribe el lote. Cada sesión trae un identificador único generado en el
  * teléfono: si ya está en la hoja _sync, se ignora sin escribir nada.
  * Por eso reintentar nunca duplica una fila.
+ *
+ * En la planilla, lo de un mismo paciente en un mismo día va en una sola fila:
+ * el ingreso, la atención y la salida. Por eso no siempre se agrega una fila
+ * (ver unirConElDia_), y entonces varias entradas de _sync apuntan a la misma.
  */
 function guardarSesiones_(sesiones) {
   if (!sesiones.length) return { ok: true, guardadas: [], duplicadas: [], errores: [] };
@@ -404,39 +431,85 @@ function guardarSesiones_(sesiones) {
   try {
     var hoja = getHoja_();
     var hojaSync = getHojaSync_();
-
-    var yaEscritos = {};
-    var ultima = hojaSync.getLastRow();
-    if (ultima > 1) {
-      hojaSync.getRange(2, 1, ultima - 1, 1).getValues().forEach(function (f) {
-        if (f[0]) yaEscritos[String(f[0])] = true;
-      });
-    }
+    var sync = leerSync_();
+    var yaEscritos = sync.uuids;
 
     var guardadas = [], duplicadas = [], errores = [];
     var filasNuevas = [], filasSync = [];
+    var completadas = {};   // filas ya escritas que cambian: número de fila → valores
     var primeraFila = hoja.getLastRow() + 1;
+
+    // Última fila de cada paciente en el día (claveDelDia_ → { n, fila, app }):
+    // las de este lote, que son las más recientes, y las de la planilla, que
+    // se leen solo si llega algo que podría unirse a ellas.
+    var delLote = {}, escritas = null;
 
     sesiones.forEach(function (s) {
       if (!s.uuid) { errores.push({ uuid: null, msg: 'Sesión sin identificador.' }); return; }
       if (yaEscritos[s.uuid]) { duplicadas.push(s.uuid); return; }
 
+      // Solo un dato inválido se devuelve como rechazo de ese registro: queda
+      // en la bandeja para corregirlo. Un fallo al leer la planilla, más abajo,
+      // hace fallar el lote entero y el teléfono lo reintenta solo.
+      var fila;
       try {
         validarDatos_(s);
-        filasNuevas.push(construirFila_(s));
-        filasSync.push([s.uuid, new Date(), primeraFila + filasNuevas.length - 1]);
-        yaEscritos[s.uuid] = true;
-        guardadas.push(s.uuid);
+        fila = construirFila_(s);
       } catch (err) {
         errores.push({ uuid: s.uuid, msg: String(err.message || err) });
+        return;
       }
+      var clave = claveDelDia_(fila);
+
+      var previa = delLote[clave] || null;
+      if (!previa && Number(fila[COL.INGRESO]) !== 1) {
+        if (!escritas) escritas = filasDelDia_(hoja, primeraFila - 1, sync, fila.length);
+        previa = escritas.porClave[clave] || null;
+      }
+      var unida = null;
+      if (previa && yaEscritaEn_(previa, fila)) {
+        // Reintento de un lote que se cortó después de completar esa fila: ya
+        // dice lo que este registro iba a escribir. Se apunta a ella sin agregar otra.
+        unida = previa.fila;
+      } else if (previa) {
+        unida = unirConElDia_(previa, fila);
+        // Una salida tiene que quedar en la última fila del paciente ese día, sea
+        // de quien sea: si una colega lo registró después, el censo leería esa
+        // fila y el paciente seguiría en la ronda. Entonces va en una fila nueva.
+        if (unida && esSalida_(unida) && previa.n < primeraFila &&
+            escritas && escritas.ultimaDelDia[claveDelPaciente_(fila)] !== previa.n) {
+          unida = null;
+        }
+      }
+
+      var n;
+      if (unida) {
+        n = previa.n;
+        if (n >= primeraFila) filasNuevas[n - primeraFila] = unida;
+        else completadas[n] = unida;
+        fila = unida;
+      } else {
+        filasNuevas.push(fila);
+        n = primeraFila + filasNuevas.length - 1;
+      }
+      // usos 0: lo de este lote nunca es un reintento a medias (ver yaEscritaEn_).
+      delLote[clave] = { n: n, fila: fila, app: true, usos: 0 };
+
+      filasSync.push([s.uuid, new Date(), n]);
+      yaEscritos[s.uuid] = true;
+      guardadas.push(s.uuid);
     });
 
     // Se escribe primero la planilla y después el registro de sincronización.
     // Si algo falla en medio, la sesión se reenvía y como su uuid no quedó
     // registrado se vuelve a intentar, en vez de darse por guardada.
+    Object.keys(completadas).forEach(function (n) {
+      hoja.getRange(Number(n), 1, 1, completadas[n].length).setValues([completadas[n]]);
+    });
     if (filasNuevas.length) {
       hoja.getRange(primeraFila, 1, filasNuevas.length, filasNuevas[0].length).setValues(filasNuevas);
+    }
+    if (filasSync.length) {
       hojaSync.getRange(hojaSync.getLastRow() + 1, 1, filasSync.length, 3).setValues(filasSync);
     }
 
@@ -447,14 +520,146 @@ function guardarSesiones_(sesiones) {
   }
 }
 
+var FILAS_DEL_DIA = 500;   // cuántas filas del final se revisan buscando las del mismo día
 
 /**
- * Deshace un egreso marcado por error: pone en cero las columnas de condición de
+ * La última fila de cada paciente, profesional y día entre las últimas filas
+ * de la planilla. Lo que se une es siempre del mismo día, así que está cerca
+ * del final.
+ *
+ * @returns {{porClave: Object, ultimaDelDia: Object}} porClave: claveDelDia_ →
+ *   { n: número de fila, fila, app: si la escribió la app, anulada: si tiene
+ *   una salida deshecha }. Solo las de la app se pueden completar: una fila
+ *   escrita a mano desde el PC no se toca. ultimaDelDia: claveDelPaciente_ →
+ *   número de la última fila de ese paciente ese día, de cualquier profesional.
+ */
+function filasDelDia_(hoja, ultimaFila, sync, ancho) {
+  var res = { porClave: {}, ultimaDelDia: {} };
+  var desde = Math.max(2, ultimaFila - FILAS_DEL_DIA + 1);
+  if (ultimaFila < desde) return res;
+  hoja.getRange(desde, 1, ultimaFila - desde + 1, ancho).getValues().forEach(function (fila, i) {
+    var n = desde + i;
+    res.porClave[claveDelDia_(fila)] = { n: n, fila: fila, app: !!sync.usos[n], usos: sync.usos[n] || 0,
+                                         anulada: !!sync.anuladas[n] };
+    res.ultimaDelDia[claveDelPaciente_(fila)] = n;
+  });
+  return res;
+}
+
+/**
+ * Si la fila ya dice lo que el registro iba a escribir: pasa al reintentar un
+ * lote que se cortó después de completar una fila y antes de anotar en _sync.
+ * Sin esto, el reintento agregaba otra fila con la misma atención o el mismo egreso.
+ */
+function yaEscritaEn_(previa, fila) {
+  if (!previa.app) return false;
+  // La sesión ya ocupó la fila del ingreso, pero su entrada en _sync no llegó a
+  // escribirse: la fila tiene solo la del ingreso. Con dos entradas sería una
+  // segunda sesión igual a la primera, que sí va aparte.
+  var conIngreso = fila.slice();
+  conIngreso[COL.INGRESO] = 1;
+  if (previa.usos === 1 && Number(fila[COL.INGRESO]) !== 1 && filasIguales_(previa.fila, conIngreso)) return true;
+  // La salida sin atención ya está marcada en esa fila: una segunda igual sería un egreso doble.
+  if (esSalidaSinAtencion_(fila) &&
+      COLS_EGRESO_REM.every(function (c) { return Number(previa.fila[c]) === Number(fila[c]); })) return true;
+  // El registro ya ocupó la fila que había dejado vacía una salida deshecha.
+  return previa.anulada && filasIguales_(previa.fila, fila);
+}
+
+/** Igualdad celda a celda, sin distinguir el número 70 del texto "70" que devuelve la planilla. */
+function filasIguales_(a, b) {
+  var largo = Math.max(a.length, b.length);
+  for (var c = 0; c < largo; c++) {
+    var x = a[c] === null || a[c] === undefined ? '' : String(a[c]).trim();
+    var y = b[c] === null || b[c] === undefined ? '' : String(b[c]).trim();
+    if (x !== y) return false;
+  }
+  return true;
+}
+
+/**
+ * Si el registro que llega completa la fila que el paciente ya tiene ese día,
+ * devuelve cómo queda esa fila; si va en una fila aparte, null.
+ *
+ * - Tras un ingreso sin atenciones, la sesión (con o sin salida) o la salida
+ *   ocupan la fila del ingreso. Así lo anota la planilla: el ingreso va junto
+ *   con la primera atención.
+ * - Tras una sesión, una salida sin atenciones se marca en la fila de esa
+ *   sesión. Antes quedaban dos filas: la atención y otra vacía con el alta.
+ *
+ * - Una salida deshecha sin atención dejó la fila vacía: el registro que llega
+ *   la ocupa tal cual, en vez de dejar una fila vacía y otra nueva.
+ *
+ * Una segunda sesión del día, o una salida cuando ya hay otra, van aparte.
+ *
+ * @param {{fila: Array, app: boolean, anulada: boolean}} previa La última fila del día.
+ * @param {Array} fila La fila del registro que llega.
+ */
+function unirConElDia_(previa, fila) {
+  if (!previa.app) return null;
+  if (previa.anulada && esFilaVacia_(previa.fila)) return fila.slice();
+  if (Number(fila[COL.INGRESO]) === 1) return null;
+
+  if (esIngresoSinSesion_(previa.fila)) {
+    var unida = fila.slice();
+    unida[COL.INGRESO] = 1;
+    return unida;
+  }
+
+  if (esSalidaSinAtencion_(fila) && !esSalida_(previa.fila)) {
+    var conSalida = previa.fila.slice();
+    COLS_EGRESO_REM.forEach(function (c) { conSalida[c] = fila[c]; });
+    return conSalida;
+  }
+  return null;
+}
+
+/** Fila con una salida y nada más: así se registra un alta que ocurrió sin atención. */
+function esSalidaSinAtencion_(fila) {
+  return Number(fila[COL.INGRESO]) !== 1 && esSalida_(fila) && sinAtencion_(fila);
+}
+
+/** El mismo paciente, la misma profesional y el mismo día. */
+function claveDelDia_(fila) {
+  return [normalizarRut_(fila[COL.RUT]), String(fila[COL.FONO]).trim(),
+          normalizarTexto_(fila[COL.MES]), parseInt(fila[COL.DIA], 10)].join('|');
+}
+
+/** El mismo paciente y el mismo día, de cualquier profesional. */
+function claveDelPaciente_(fila) {
+  return [normalizarRut_(fila[COL.RUT]), normalizarTexto_(fila[COL.MES]), parseInt(fila[COL.DIA], 10)].join('|');
+}
+
+/**
+ * Fila de ingreso sin ninguna atención anotada, que es como la escribe la app
+ * al tocar "Registrar ingreso".
+ */
+function esIngresoSinSesion_(fila) {
+  return Number(fila[COL.INGRESO]) === 1 && !esSalida_(fila) && sinAtencion_(fila);
+}
+
+/** Sin ingreso, sin salida y sin atención: lo que queda al deshacer una salida sin atención. */
+function esFilaVacia_(fila) {
+  return Number(fila[COL.INGRESO]) !== 1 && !esSalida_(fila) && sinAtencion_(fila);
+}
+
+/** Nada anotado desde la columna de atenciones en adelante. */
+function sinAtencion_(fila) {
+  for (var c = COL.ATENCIONES; c < fila.length; c++) {
+    if (fila[c] !== '' && fila[c] !== 0 && fila[c] !== null) return false;
+  }
+  return true;
+}
+
+
+/**
+ * Deshace un egreso marcado por error: pone en cero las columnas de salida de
  * la fila que escribió la app, ubicada por su identificador único.
  *
  * Solo funciona con filas escritas por la app, porque son las únicas que tienen
- * uuid en la hoja _sync. No borra la fila: la deja como una atención sin egreso,
- * que es exactamente lo que habría sido si no te hubieras equivocado.
+ * uuid en la hoja _sync. No borra la fila ni toca el resto: la atención y el
+ * ingreso anotados en esa misma fila se quedan, que es exactamente lo que
+ * habría sido si no te hubieras equivocado.
  */
 function anularEgreso_(uuid) {
   if (!uuid) throw new Error('Falta el identificador del egreso.');
@@ -467,12 +672,20 @@ function anularEgreso_(uuid) {
     var ultima = hojaSync.getLastRow();
     if (ultima < 2) throw new Error('No hay registros de sincronización.');
 
-    var registros = hojaSync.getRange(2, 1, ultima - 1, 3).getValues();
-    var fila = null;
+    var registros = hojaSync.getRange(2, 1, ultima - 1, 4).getValues();
+    var fila = null, entrada = null, yaAnulado = false;
     for (var i = registros.length - 1; i >= 0; i--) {
-      if (String(registros[i][0]) === String(uuid)) { fila = Number(registros[i][2]); break; }
+      if (String(registros[i][0]) === String(uuid)) {
+        fila = Number(registros[i][2]);
+        entrada = i + 2;
+        yaAnulado = registros[i][3] === 'anulado';
+        break;
+      }
     }
     if (!fila) throw new Error('Ese egreso no lo registró la app.');
+    // Un reintento tras perder la respuesta: ya se deshizo. Volver a hacerlo
+    // borraría una salida nueva que haya ocupado después esa misma fila.
+    if (yaAnulado) return { ok: true, fila: fila };
 
     var hoja = getHoja_();
     // Columnas de condición: de INGRESO a NIVEL PRIMARIO, en base 1.
@@ -487,7 +700,13 @@ function anularEgreso_(uuid) {
     });
     if (!eraEgreso) throw new Error('Esa fila no tiene marca de egreso.');
 
-    hoja.getRange(fila, desde, 1, ancho).setValues([actual.map(function () { return 0; })]);
+    // Solo las salidas: la fila puede llevar también el ingreso de ese día.
+    hoja.getRange(fila, desde, 1, ancho).setValues([actual.map(function (v, k) {
+      return COLS_EGRESO_REM.indexOf(COL.INGRESO + k) !== -1 ? 0 : v;
+    })]);
+    // Si la salida no traía atención, la fila queda vacía: con esta marca el
+    // censo no la cuenta como atención y el próximo registro del día la ocupa.
+    hojaSync.getRange(entrada, 4).setValue('anulado');
     return { ok: true, fila: fila };
 
   } finally {

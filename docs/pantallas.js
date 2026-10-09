@@ -384,6 +384,8 @@ function pantallaSesion(p, previa) {
   const info = servicioInfo(p.servicio);
   const limite = diasSugeridos(p.categorizacion);
   const atrasado = p.diasSinAtencion > limite;
+  // Si ya tiene una atención hoy, una salida sin atención va en esa misma fila.
+  const yaHoy = registradosHoy().has(normRut(p.rut));
 
   const cont = abrirPantalla(`
     <div class="barra">
@@ -444,6 +446,16 @@ function pantallaSesion(p, previa) {
         ${chips('educacion', [['EG','EG'],['EF','EF']], { tipo: 'checkbox', valor: [] })}
       </div>
 
+      <div class="seccion" id="seccionSalida" data-ya-hoy="${yaHoy ? '1' : ''}">
+        <div class="seccion-titulo">Salida</div>
+        ${chips('salida', [['', 'Sigue en la ronda'], ...EGRESOS])}
+        <div id="preguntaAtencion" class="oculto" style="margin-top:14px">
+          <div class="pregunta">¿Lo atendiste en esta visita?</div>
+          ${chips('atendido', [['si', 'Sí, lo atendí'], ['no', 'No, salió sin atención']])}
+        </div>
+        <div id="resumenSalida" style="margin-top:12px"></div>
+      </div>
+
       <div class="acciones">
         <button class="btn btn-secundario" id="btnCancelar">Cancelar</button>
         <button class="btn btn-primario" id="btnGuardar">Guardar sesión</button>
@@ -451,6 +463,9 @@ function pantallaSesion(p, previa) {
     </main>`);
 
   conectarContadores(cont);
+  cont.addEventListener('change', alCambiarSalida);
+  // Lo que dice el resumen depende de la salida, la respuesta y las atenciones.
+  ['click', 'input', 'change'].forEach(ev => cont.addEventListener(ev, pintarResumenSalida));
   $('#btnAtras').addEventListener('click', cerrarPantalla);
   $('#btnCancelar').addEventListener('click', cerrarPantalla);
   $('#btnMenu').addEventListener('click', () => hojaAcciones(vigente(p)));
@@ -468,6 +483,7 @@ function pantallaSesion(p, previa) {
         if (el) el.checked = true;
       }
       $('#c_atenciones').value = previa.atencionesRealizadas || 1;
+      delete $('#seccionSalida').dataset.antes;   // el número ya lo puso este botón
       toast('Copiado de la sesión anterior', 'ok');
     });
   }
@@ -475,6 +491,121 @@ function pantallaSesion(p, previa) {
 
 const textoDiagnostico = (p) =>
   `${esc(p.diagnostico1)}${p.rem1 ? ' · REM ' + esc(p.rem1) : ''}${p.ges ? ' · GES ' + esc(p.ges) : ''}`;
+
+/** "Alta" → "alta", pero "ACV referido a APS" queda igual: las siglas no se tocan. */
+const textoSalida = (motivo) => {
+  const t = (EGRESOS.find(([v]) => v === motivo) || [motivo, motivo])[1];
+  return /^[A-ZÁÉÍÓÚÑ]{2}/.test(t) ? t : t.charAt(0).toLowerCase() + t.slice(1);
+};
+
+/** Lo anotado en la parte de atención de la pantalla de sesión. */
+function leerAtencion() {
+  const intervenciones = {};
+  INTERVENCIONES.forEach(n => { intervenciones[n] = leerNum('int_' + n); });
+  const disf = leerRadio('disf');
+  intervenciones.DISF = disf;
+  const educacion = leerChecks('educacion');
+  return {
+    atencionesRealizadas: leerNum('atenciones'),
+    brechas: leerNum('brechas'),
+    suspendidas: $('#suspendidas').value.trim(),
+    tipoEvaluacion: leerRadio('tipoEval'),
+    evaluaciones: leerChecks('evaluaciones'),
+    intervenciones,
+    disf,
+    eg: educacion.includes('EG') ? 1 : 0,
+    ef: educacion.includes('EF') ? 1 : 0
+  };
+}
+
+/** Una salida que ocurrió sin atención: así queda el registro aunque la pantalla tenga algo anotado. */
+const SIN_ATENCION = () => ({ atencionesRealizadas: 0, brechas: 0, suspendidas: '', tipoEvaluacion: '',
+                              evaluaciones: [], intervenciones: {}, disf: '', eg: 0, ef: 0 });
+
+function marcarRadio(nombre, valor) {
+  $$(`input[name="${nombre}"]`).forEach(x => { x.checked = x.value === valor; });
+}
+
+/**
+ * Al elegir una salida se pregunta si hubo atención: el contador parte en 1 y,
+ * en el caso del fin de semana, quedaba una atención que no ocurrió. Si ya se
+ * registró una atención hoy, la respuesta habitual es "No": la salida se anota
+ * en esa misma fila.
+ */
+function alCambiarSalida(e) {
+  const nombre = e.target && e.target.name;
+  if (nombre !== 'salida' && nombre !== 'atendido') return;
+  const contador = $('#c_atenciones');
+  const seccion = $('#seccionSalida');
+
+  if (nombre === 'salida') {
+    const hay = !!leerRadio('salida');
+    $('#preguntaAtencion').classList.toggle('oculto', !hay);
+    if (!hay) {
+      // Solo se devuelve el número que "No" había puesto en 0, nunca uno que
+      // ella escribió después.
+      const eraNo = leerRadio('atendido') === 'no';
+      marcarRadio('atendido', '');
+      if (eraNo && seccion.dataset.antes) contador.value = seccion.dataset.antes;
+      delete seccion.dataset.antes;
+      return;
+    }
+    if (!leerRadio('atendido') && seccion.dataset.yaHoy) marcarRadio('atendido', 'no');
+  }
+
+  const atendido = leerRadio('atendido');
+  if (atendido === 'no' && contador.value !== '0') {
+    seccion.dataset.antes = contador.value;   // por si cambia de idea
+    contador.value = 0;
+  } else if (atendido === 'si') {
+    if (!(Number(contador.value) > 0)) contador.value = seccion.dataset.antes || 1;
+    delete seccion.dataset.antes;
+  }
+}
+
+/**
+ * Con una salida elegida, dice qué va a quedar en la planilla antes de
+ * guardar: la atención y la salida van en una sola fila, y si no hubo
+ * atención queda solo la salida.
+ */
+function pintarResumenSalida() {
+  const caja = $('#resumenSalida');
+  const btn = $('#btnGuardar');
+  if (!caja || !btn) return;
+  const salida = leerRadio('salida');
+  if (!salida) {
+    caja.innerHTML = '';
+    btn.textContent = 'Guardar sesión';
+    return;
+  }
+  btn.textContent = 'Guardar y dar salida';
+  const motivo = `<strong>${esc(textoSalida(salida))}</strong>`;
+  const yaHoy = !!$('#seccionSalida').dataset.yaHoy;
+  const atendido = leerRadio('atendido');
+  const deshacer = ' Sale de la ronda; si te equivocas, devuélvelo desde Egresos recientes.';
+  let texto, clase = 'warn';
+
+  if (!atendido) {
+    clase = 'info';
+    texto = 'Indica si lo atendiste. Si salió sin que lo vieras (por ejemplo, durante el fin de semana), elige "No".';
+  } else if (atendido === 'no') {
+    texto = `Se registrará solo la salida por ${motivo}, sin atenciones` +
+      (yaHoy ? ', junto a la atención que ya registraste hoy.' : '.') +
+      (tieneAtencion(leerAtencion()) ? ' Lo anotado más arriba no se guardará.' : '') + deshacer;
+  } else {
+    const n = leerNum('atenciones');
+    if (n < 1) {
+      clase = 'info';
+      texto = 'Indica el N° de atenciones, arriba de todo.';
+    } else if (yaHoy) {
+      texto = `Ya registraste una atención hoy: esta será otra atención, en una fila aparte, con la salida por ${motivo}.` +
+        ' Si solo vienes a marcar la salida, elige "No".' + deshacer;
+    } else {
+      texto = `Quedará en un solo registro: ${n === 1 ? 'la atención' : n + ' atenciones'} y la salida por ${motivo}.` + deshacer;
+    }
+  }
+  caja.innerHTML = `<div class="banda ${clase}">${texto}</div>`;
+}
 
 /** Tras cambiar cama o diagnóstico desde el menú, la sesión a medio llenar sigue abierta. */
 function refrescarCabeceraSesion(p) {
@@ -503,20 +634,28 @@ async function guardarSesion(p) {
 }
 
 async function guardarSesionYa(p) {
+  // Atención y salida van juntas, en una sola fila. Sin atención queda solo la
+  // salida: un alta o un fallecimiento del fin de semana se registra así.
+  const salida = leerRadio('salida');
+  const atendido = salida ? leerRadio('atendido') : 'si';
+  if (!atendido) {
+    toast('Indica si lo atendiste en esta visita.', 'error');
+    $('#preguntaAtencion').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return false;
+  }
+  const atencion = atendido === 'no' ? SIN_ATENCION() : leerAtencion();
+  if (salida && atendido === 'si' && !(atencion.atencionesRealizadas > 0)) {
+    toast('Indica el N° de atenciones, o elige "No, salió sin atención".', 'error');
+    return false;
+  }
+
   // Sin estos datos la planilla rechaza la fila y la sesión se quedaría en la
   // bandeja reintentándose para siempre. Mejor pedirlos ahora, al lado de la cama.
   if (!await completarSiFalta(p)) return false;
 
-  const intervenciones = {};
-  INTERVENCIONES.forEach(n => { intervenciones[n] = leerNum('int_' + n); });
-  const disf = leerRadio('disf');
-  intervenciones.DISF = disf;
-
-  const educacion = leerChecks('educacion');
-
   const sesion = {
     uuid: uuid(),
-    tipo: 'sesion',
+    tipo: salida ? 'egreso' : 'sesion',
     fecha: hoyISO(),
     servicio: p.servicio,
     'fonoaudiólogo': estado.config.fono,
@@ -528,46 +667,61 @@ async function guardarSesionYa(p) {
     diagnosticos: [p.diagnostico1, p.diagnostico2 || ''],
     rems: [p.rem1, p.rem2 || ''],
     origen: p.origen,
-    condicionHospitalizacion: [],
+    condicionHospitalizacion: salida ? [salida] : [],
     categorizacion: leerRadio('categorizacion'),
-    atencionesRealizadas: leerNum('atenciones'),
-    brechas: leerNum('brechas'),
-    suspendidas: $('#suspendidas').value.trim(),
-    tipoEvaluacion: leerRadio('tipoEval'),
-    evaluaciones: leerChecks('evaluaciones'),
-    intervenciones,
-    disf,
-    eg: educacion.includes('EG') ? 1 : 0,
-    ef: educacion.includes('EF') ? 1 : 0
+    ...atencion
   };
 
-  // Se recuerda el patrón para el botón "igual que la sesión anterior".
-  await DB.guardar('config', {
-    intervenciones, disf,
-    evaluaciones: sesion.evaluaciones,
-    atencionesRealizadas: sesion.atencionesRealizadas
-  }, 'ultima:' + normRut(p.rut));
+  if (atendido === 'si') {
+    // Se recuerda el patrón para el botón "igual que la sesión anterior". Una
+    // salida sin atención no lo pisa.
+    await DB.guardar('config', {
+      intervenciones: atencion.intervenciones, disf: atencion.disf,
+      evaluaciones: atencion.evaluaciones,
+      atencionesRealizadas: atencion.atencionesRealizadas
+    }, 'ultima:' + normRut(p.rut));
 
-  // Cómo estaba el paciente, por si la sesión termina descartada en la bandeja.
-  sesion.previo = { ultimaFecha: p.ultimaFecha, ultimaFechaMia: ultimaMia(p), fono: p.fono,
-                    diasSinAtencion: p.diasSinAtencion, atencionesPrevias: p.atencionesPrevias,
-                    categorizacion: p.categorizacion };
+    // Cómo estaba el paciente, por si la sesión termina descartada en la bandeja.
+    sesion.previo = { ultimaFecha: p.ultimaFecha, ultimaFechaMia: ultimaMia(p), fono: p.fono,
+                      diasSinAtencion: p.diasSinAtencion, atencionesPrevias: p.atencionesPrevias,
+                      categorizacion: p.categorizacion, soloIngreso: !!p.soloIngreso };
 
-  // El censo local refleja el registro de inmediato, aunque no haya red.
-  p.ultimaFecha = sesion.fecha;
-  p.ultimaFechaMia = sesion.fecha;
-  p.fono = estado.config.fono;
-  p.diasSinAtencion = 0;
-  p.atencionesPrevias = (p.atencionesPrevias || 0) + 1;
-  if (sesion.categorizacion) p.categorizacion = sesion.categorizacion;
-  await DB.guardar('censo', p);
+    // El censo local refleja el registro de inmediato, aunque no haya red. Una
+    // salida sin atención no cambia nada de esto: si se deshace, el paciente
+    // vuelve tal como estaba.
+    p.soloIngreso = false;
+    p.ultimaFecha = sesion.fecha;
+    p.ultimaFechaMia = sesion.fecha;
+    p.fono = estado.config.fono;
+    p.diasSinAtencion = 0;
+    p.atencionesPrevias = (p.atencionesPrevias || 0) + 1;
+    if (sesion.categorizacion) p.categorizacion = sesion.categorizacion;
+  }
+  if (salida) await sacarDeLaRonda(p, salida, sesion.uuid);
+  else await DB.guardar('censo', p);
 
   await encolar(sesion);
   cerrarPantalla();
   limpiarBusqueda();
-  toast('Sesión guardada', 'ok');
+  toast(salida ? `${p.nombre} egresó por ${textoSalida(salida)}` : 'Sesión guardada', 'ok');
   return true;
 }
+
+/** Pasa al paciente de la ronda a Egresos recientes, desde donde se puede deshacer. */
+async function sacarDeLaRonda(p, motivo, uuidEgreso) {
+  estado.censo = estado.censo.filter(x => normRut(x.rut) !== normRut(p.rut));
+  await DB.borrar('censo', p.rut);
+  estado.egresos.unshift(Object.assign(p, { motivoEgreso: motivo, uuidEgreso }));
+  // Guardado ya: si la app se cierra antes de enviarlo, el egreso no puede
+  // quedar solo en memoria, o el paciente desaparecería de las dos listas.
+  await guardarCacheLocal();
+}
+
+/** Si el registro trae algo de una atención, además de una posible salida. */
+const tieneAtencion = (s) =>
+  s.atencionesRealizadas > 0 || s.brechas > 0 || !!s.suspendidas || !!s.tipoEvaluacion ||
+  (s.evaluaciones || []).length > 0 || !!s.disf || !!s.eg || !!s.ef ||
+  Object.keys(s.intervenciones || {}).some(k => k !== 'DISF' && Number(s.intervenciones[k]) > 0);
 
 /* ══════════════════════════════════════════════════════════════
    HOJA DE ACCIONES — cambiar cama, egreso
@@ -592,7 +746,36 @@ function hojaAcciones(p) {
     velo.remove();
     if (accion === 'cama')        hojaCambiarCama(p);
     if (accion === 'diagnostico') hojaDiagnostico(p);
-    if (accion === 'egreso')      hojaEgreso(p);
+    if (accion === 'egreso')      hojaSalida();
+  });
+}
+
+/**
+ * El camino de siempre (menú → Marcar salida → motivo), pero ya no registra una
+ * fila aparte: marca el motivo en la sección Salida de esta misma sesión, que
+ * pregunta si hubo atención y se guarda con un solo registro.
+ */
+function hojaSalida() {
+  const velo = document.createElement('div');
+  velo.className = 'velo';
+  velo.innerHTML = `<div class="hoja">
+      <h2>Marcar salida</h2>
+      <div class="sub">Elige el motivo. Después indica si lo atendiste y guarda: queda todo en un solo registro.</div>
+      ${EGRESOS.map(([v, t]) => `<button class="hoja-opcion${v === 'Fallecimiento' ? ' peligro' : ''}" data-salida="${esc(v)}">${esc(t)}</button>`).join('')}
+      <button class="hoja-opcion" data-accion="cerrar" style="justify-content:center">Cancelar</button>
+    </div>`;
+  document.body.appendChild(velo);
+
+  velo.addEventListener('click', (e) => {
+    if (e.target === velo || e.target.closest('[data-accion="cerrar"]')) { velo.remove(); return; }
+    const motivo = e.target.closest('[data-salida]')?.dataset.salida;
+    if (!motivo) return;
+    velo.remove();
+    const chip = $$('input[name="salida"]').find(x => x.value === motivo);
+    if (!chip) return;
+    chip.checked = true;
+    chip.dispatchEvent(new Event('change', { bubbles: true }));
+    $('#preguntaAtencion').scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
 }
 
@@ -720,71 +903,6 @@ function hojaCambiarCama(p) {
   });
 }
 
-function hojaEgreso(p) {
-  const velo = document.createElement('div');
-  velo.className = 'velo';
-  velo.innerHTML = `<div class="hoja">
-      <h2>Marcar egreso</h2>
-      <div class="sub">${esc(p.nombre)} saldrá de la ronda. Puedes recuperarlo mientras esté en Egresos recientes.</div>
-      ${EGRESOS.map(([v, t]) => `<button class="hoja-opcion${v === 'Fallecimiento' ? ' peligro' : ''}" data-egreso="${esc(v)}">${t}</button>`).join('')}
-      <button class="hoja-opcion" data-accion="cerrar" style="justify-content:center">Cancelar</button>
-    </div>`;
-  document.body.appendChild(velo);
-
-  velo.addEventListener('click', async (e) => {
-    if (e.target === velo || e.target.closest('[data-accion="cerrar"]')) { velo.remove(); return; }
-    const motivo = e.target.closest('[data-egreso]')?.dataset.egreso;
-    if (!motivo) return;
-    velo.remove();
-    await registrarEgreso(p, motivo);
-  });
-}
-
-async function registrarEgreso(p, motivo) {
-  p = vigente(p);
-  // La planilla exige los mismos datos para un egreso que para una sesión.
-  if (!await completarSiFalta(p)) return;
-
-  const sesion = {
-    uuid: uuid(),
-    tipo: 'egreso',
-    fecha: hoyISO(),
-    servicio: p.servicio,
-    'fonoaudiólogo': estado.config.fono,
-    cama: p.cama,
-    nombrePaciente: p.nombre,
-    sexo: p.sexo,
-    edad: String(p.edad ?? ''),
-    rut: p.rut,
-    diagnosticos: [p.diagnostico1, p.diagnostico2 || ''],
-    rems: [p.rem1, p.rem2 || ''],
-    origen: p.origen,
-    condicionHospitalizacion: [motivo],
-    categorizacion: p.categorizacion || '',
-    atencionesRealizadas: 0,
-    brechas: 0,
-    suspendidas: '',
-    tipoEvaluacion: '',
-    evaluaciones: [],
-    intervenciones: {},
-    eg: 0, ef: 0
-  };
-
-  estado.censo = estado.censo.filter(x => x.rut !== p.rut);
-  await DB.borrar('censo', p.rut);
-
-  const egresado = { ...p, motivoEgreso: motivo, uuidEgreso: sesion.uuid };
-  estado.egresos.unshift(egresado);
-  // Guardado ya: si la app se cierra antes de enviarlo, el egreso no puede
-  // quedar solo en memoria, o el paciente desaparecería de las dos listas.
-  await guardarCacheLocal();
-
-  await encolar(sesion);
-  cerrarPantalla();
-  limpiarBusqueda();
-  toast(`${p.nombre} egresó por ${motivo.toLowerCase()}`, 'ok');
-}
-
 /* ══════════════════════════════════════════════════════════════
    EGRESOS RECIENTES
    ══════════════════════════════════════════════════════════════ */
@@ -851,11 +969,21 @@ async function restaurarEgresoYa(rut) {
     }
   }
 
-  if (pendiente) {
+  if (pendiente && tieneAtencion(pendiente)) {
+    // Nunca se envió, o la planilla lo rechazó, y trae la atención junto con la
+    // salida: la atención sí ocurrió. Queda en la bandeja como sesión, sin la
+    // salida. Se cambia antes de cualquier espera, para que ningún envío tome
+    // la versión con salida.
+    pendiente.tipo = 'sesion';
+    pendiente.condicionHospitalizacion = [];
+    await DB.guardar('outbox', pendiente);
+  } else if (pendiente) {
     // Nunca se envió, o la planilla lo rechazó: no está escrito en ninguna parte.
     // Sale de la bandeja antes de cualquier espera, para que ningún envío lo tome.
     estado.outbox = estado.outbox.filter(s => s.uuid !== pendiente.uuid);
     await DB.borrar('outbox', pendiente.uuid);
+    // Registrada desde la sesión, había dejado al paciente como atendido hoy.
+    if (pendiente.previo) Object.assign(p, pendiente.previo);
   } else if (p.uuidEgreso) {
     // Ya se escribió: se pide al servidor que limpie las marcas de egreso de esa fila.
     try {
@@ -1044,7 +1172,10 @@ async function crearIngresoYa() {
     ultimaFecha: hoyISO(),
     ultimaFechaMia: hoyISO(),
     diasSinAtencion: 0,
-    atencionesPrevias: 0
+    atencionesPrevias: 0,
+    // Queda pendiente en la ronda hasta registrar la primera sesión, que se
+    // escribe en la misma fila del ingreso (ver guardarSesiones_ en Api.gs).
+    soloIngreso: true
   };
 
   const ingreso = {
@@ -1220,6 +1351,8 @@ function hojaCompletar(p, faltan) {
    ningún lugar donde verlo: solo se notaba en el contador de la píldora.
    ══════════════════════════════════════════════════════════════ */
 const TIPO_REGISTRO = { sesion: 'Sesión', ingreso: 'Ingreso', egreso: 'Egreso' };
+const etiquetaRegistro = (s) =>
+  (s.tipo === 'egreso' && tieneAtencion(s)) ? 'Sesión y egreso' : (TIPO_REGISTRO[s.tipo] || 'Registro');
 
 /** La sesión con los nombres de campo del paciente, para revisarla con las mismas reglas. */
 const sesionComoPaciente = (s) => ({
@@ -1244,7 +1377,7 @@ function abrirBandeja() {
           <div class="bandeja-item${s.error ? ' con-error' : ''}">
             <div class="bandeja-cab">
               <strong>${esc(s.nombrePaciente || s.rut)}</strong>
-              <span>${esc(TIPO_REGISTRO[s.tipo] || 'Registro')} · ${esc(fechaCorta(s.fecha))}</span>
+              <span>${esc(etiquetaRegistro(s))} · ${esc(fechaCorta(s.fecha))}</span>
             </div>
             ${s.error ? `<div class="bandeja-error">${ICO.alerta} ${esc(s.error)}</div>` : ''}
             <div class="bandeja-acciones">
@@ -1335,18 +1468,6 @@ async function descartarRegistro(id) {
   estado.outbox = estado.outbox.filter(x => x.uuid !== id);
   await DB.borrar('outbox', id);
 
-  // Una sesión descartada no cuenta como atención: el paciente vuelve a como
-  // estaba antes de registrarla, salvo que haya otra sesión suya igual o más
-  // reciente esperando, que es la que manda.
-  if (s.tipo === 'sesion' && s.previo &&
-      !estado.outbox.some(x => x.tipo === 'sesion' && x.fecha >= s.fecha && normRut(x.rut) === normRut(s.rut))) {
-    const p = estado.censo.find(x => normRut(x.rut) === normRut(s.rut));
-    if (p) {
-      Object.assign(p, s.previo);
-      await DB.guardar('censo', p);
-    }
-  }
-
   // Un egreso descartado devuelve al paciente a la ronda; un ingreso
   // descartado lo saca, porque la planilla nunca supo de él.
   if (s.tipo === 'egreso') {
@@ -1355,7 +1476,7 @@ async function descartarRegistro(id) {
       delete p.motivoEgreso;
       delete p.uuidEgreso;
       estado.egresos = estado.egresos.filter(x => x !== p);
-      estado.censo.push(p);
+      if (!estado.censo.some(x => normRut(x.rut) === normRut(p.rut))) estado.censo.push(p);
       await DB.guardar('censo', p);
     }
   } else if (s.tipo === 'ingreso' && !estado.outbox.some(x => normRut(x.rut) === normRut(s.rut))) {
@@ -1363,6 +1484,19 @@ async function descartarRegistro(id) {
     if (p && !p.atencionesPrevias) {
       estado.censo = estado.censo.filter(x => x !== p);
       await DB.borrar('censo', p.rut);
+    }
+  }
+
+  // Una sesión descartada no cuenta como atención: el paciente vuelve a como
+  // estaba antes de registrarla, salvo que haya otra sesión suya igual o más
+  // reciente esperando, que es la que manda. Vale también para la sesión que
+  // llevaba una salida: ya volvió a la ronda arriba.
+  if (s.previo &&
+      !estado.outbox.some(x => x.previo && x.fecha >= s.fecha && normRut(x.rut) === normRut(s.rut))) {
+    const p = estado.censo.find(x => normRut(x.rut) === normRut(s.rut));
+    if (p) {
+      Object.assign(p, s.previo);
+      await DB.guardar('censo', p);
     }
   }
   await guardarCacheLocal();
